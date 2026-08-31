@@ -1,0 +1,14 @@
+/* Available in ordinary mode too; scoped to this plugin's entry and dialog. */
+.toolbar__item.sim-immersive-entry svg { width: 14px; height: 14px; fill: currentColor; }
+.sim-settings-dialog .b3-dialog__container { height: fit-content !important; min-height: 0; max-height: calc(100vh - 32px); }
+.sim-settings-dialog .b3-dialog__body { min-height: 0; }
+.sim-settings-dialog .b3-dialog__content { flex: 0 1 auto; padding: 4px 20px 14px; overflow-y: auto; }
+.sim-settings-dialog .config-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px 0; min-height: 0; }
+.sim-settings-dialog .config-item > .fn__space { display: none; }
+.sim-settings-dialog .config-item > .fn__flex-1 { min-width: 0; }
+.sim-settings-dialog .config-name { line-height: 22px; }
+.sim-settings-dialog .b3-label__text { margin-top: 4px; font-size: 12px; line-height: 18px; }
+.sim-settings-dialog .config-item > input { align-self: start; margin-top: 2px; }
+.sim-settings-dialog .config-item > input[type="number"] { width: 64px !important; }
+.sim-settings-dialog .config-item:last-of-type { border-bottom: 0; }
+.sim-settings-version { padding-top: 6px; text-align: right; font-size: 11px; line-height: 18px; color: var(--b3-theme-on-surface, #777); }

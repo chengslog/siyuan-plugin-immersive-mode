@@ -1,8 +1,13 @@
-const { Plugin, Setting, getFrontend, getBackend, openSetting, showMessage } = require('siyuan');
+const { Plugin, Setting, getFrontend, getBackend, showMessage } = require('siyuan');
 const css = require('./styles.css');
-const { ACTION_GROUPS, normalizeSettings, clamp, orbPosition, plainLabel, discoverActions, mergedTabSlots, tabsOverflow } = require('./core');
-const APPLE_ZOOM_ICON = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="currentColor"/><path d="M11 20.5 20.5 11M13 11h7.5v7.5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const uiCss = require('./ui.css');
+const { version: pluginVersion } = require('../plugin.json');
+const { ACTION_GROUPS, normalizeSettings, clamp, orbPosition, plainLabel, stripShortcuts, discoverActions, tabsOverflow } = require('./core');
+const { ENTER_ICON, EXIT_ICON } = require('./icons');
 const STORE = 'preferences.json';
+const CONTROL_ICONS = {
+  settings: 'iconSettings', minimize: 'iconMin', maximize: 'iconMax', restore: 'iconRestore', close: 'iconClose',
+};
 
 function button(label, className, callback) {
   const element = document.createElement('button');
@@ -10,6 +15,19 @@ function button(label, className, callback) {
   element.className = className;
   element.textContent = label;
   element.addEventListener('click', callback);
+  return element;
+}
+
+function setButtonIcon(element, label, icon) {
+  element.title = label;
+  element.setAttribute('aria-label', label);
+  element.innerHTML = icon === 'exit' ? EXIT_ICON : `<svg aria-hidden="true" fill="currentColor"><use href="#${CONTROL_ICONS[icon]}" xlink:href="#${CONTROL_ICONS[icon]}"></use></svg>`;
+}
+
+function iconButton(key, label, icon, callback) {
+  const element = button('', 'sim-window-button', callback);
+  element.dataset.controlKey = key;
+  setButtonIcon(element, label, icon);
   return element;
 }
 
@@ -21,21 +39,38 @@ module.exports = class ImmersiveMode extends Plugin {
     this.cleanups = [];
     this.pendingSave = Promise.resolve();
     this.nativeReveals = new Set();
+    this.actionPositions = new WeakMap();
+    this.knownMenuSources = new WeakSet();
+    this.childMenuPositions = new Map();
+    this.defaultPageTools = new Set();
     this.geometryRestores = new Set();
     this.markedRows = new Set();
     this.mergedRows = new Map();
     this.tabSwitchers = new Map();
     this.tabResizeTargets = new Set();
+    this.topbarOverflow = new Map();
     try { this.settingsData = normalizeSettings(await this.loadData(STORE)); }
     catch (error) { console.warn('[immersive-mode] Settings unavailable', error); }
     if (this.disposed) return;
     this.frontend = getFrontend();
     if (!['desktop', 'browser-desktop'].includes(this.frontend)) return;
-    this.isWindowsDesktop = this.frontend === 'desktop' && /^Win/i.test(navigator.platform)
-      && typeof getBackend === 'function' && getBackend() === 'windows';
+    const backend = typeof getBackend === 'function' ? getBackend() : '';
+    this.isDesktopClient = this.frontend === 'desktop' && ['windows', 'linux', 'darwin'].includes(backend);
+    this.isWindowsDesktop = this.isDesktopClient && /^Win/i.test(navigator.platform) && backend === 'windows';
     this.addCommand({ langKey: 'toggleImmersive', langText: '切换沉浸模式', hotkey: '⌥⇧I', callback: () => this.toggle() });
-    this.setting = new Setting({ confirmCallback: () => {} });
-    this.setting.addItem({ title: 'Windows：保留顶部工具栏', description: '默认关闭：完全沉浸，28px 顶部只保留最小化、最大化 / 还原、关闭和空白拖窗区，页签收进小圆球。开启后工具按钮与原生页签共用这行，菜单不重复收纳上侧栏功能。仅本地 Windows 客户端生效，浏览器 / Docker 不显示窗口控制条。', createActionElement: () => {
+    this.uiStyle = document.createElement('style'); this.uiStyle.id = 'sim-ui-style'; this.uiStyle.textContent = uiCss; document.head.append(this.uiStyle);
+    this.setting = new Setting({ width: '520px', height: 'fit-content' });
+    const openSettings = this.setting.open.bind(this.setting);
+    this.setting.open = (...args) => {
+      openSettings(...args);
+      this.setting.dialog?.element?.classList.add('sim-settings-dialog');
+      const content = this.setting.dialog?.element?.querySelector('.b3-dialog__content');
+      if (content) {
+        const version = document.createElement('div'); version.className = 'sim-settings-version';
+        version.textContent = `版本 ${pluginVersion}`; content.append(version);
+      }
+    };
+    this.setting.addItem({ title: 'Windows：保留顶部工具栏', description: '工具与页签保留在顶部，仅 Windows 客户端生效。', createActionElement: () => {
       const toggle = document.createElement('input');
       toggle.type = 'checkbox'; toggle.className = 'b3-switch';
       toggle.setAttribute('aria-label', 'Windows：保留顶部工具栏');
@@ -48,7 +83,17 @@ module.exports = class ImmersiveMode extends Plugin {
       });
       return toggle;
     } });
-    this.setting.addItem({ title: '页签默认展示数量', description: '小圆球卡片默认展示的已打开页签数量（1–20，默认 5）。超出的页签折叠，点击“展开其余页签”查看；不关闭或重建原页面。', createActionElement: () => {
+    this.setting.addItem({ title: '资源打开时进入沉浸模式', description: '新开资源页签时自动进入，默认关闭。', createActionElement: () => {
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'b3-switch';
+      toggle.setAttribute('aria-label', '资源打开时进入沉浸模式');
+      toggle.checked = this.settingsData.autoEnterOnResourceOpen;
+      toggle.addEventListener('change', () => {
+        this.settingsData.autoEnterOnResourceOpen = toggle.checked;
+        this.configureResourceAutoEnter(); this.savePreferences();
+      });
+      return toggle;
+    } });
+    this.setting.addItem({ title: '页签默认展示数量', description: '悬浮菜单显示 1–20 个页签，超出折叠。', createActionElement: () => {
       const input = document.createElement('input');
       input.type = 'number'; input.min = '1'; input.max = '20'; input.step = '1';
       input.className = 'b3-text-field'; input.style.width = '72px';
@@ -68,17 +113,59 @@ module.exports = class ImmersiveMode extends Plugin {
       input.addEventListener('input', () => { if (input.value !== '' && input.validity.valid) applyCount(); });
       return input;
     } });
-    this.setting.addItem({ title: '悬浮球位置', description: '重置到窗口右侧。拖动小圆球可以重新定位，松手后自动贴边。', createActionElement: () => button('重置位置', 'b3-button b3-button--outline', () => {
-      this.settingsData.side = 'right'; this.settingsData.y = 0.65; this.placeOrb(); this.savePreferences();
-    }) });
-    this.setting.addItem({ title: '紧急退出', description: 'Alt+Shift+I 切换沉浸。每次启动保持普通界面，不自动改变系统窗口大小。', createActionElement: () => button('退出沉浸', 'b3-button b3-button--outline', () => this.leave()) });
-    this.setting.addItem({ title: '思源设置', description: '打开思源原生设置。第三方非标准入口可通过菜单中的“原生工具栏”访问。', createActionElement: () => button('打开', 'b3-button b3-button--outline', () => openSetting(this.app)) });
   }
 
   onLayoutReady() {
     if (this.disposed || !['desktop', 'browser-desktop'].includes(this.frontend) || this.topButton?.isConnected) return;
-    this.topButton = this.addTopBar({ icon: APPLE_ZOOM_ICON, title: '进入沉浸模式 · Alt+Shift+I', position: 'right', callback: () => this.toggle() });
-    this.topButton?.classList.add('sim-apple-zoom');
+    this.topButton = this.addTopBar({ icon: ENTER_ICON, title: '进入沉浸模式 · Alt+Shift+I', position: 'right', callback: () => this.toggle() });
+    this.topButton?.classList.add('sim-immersive-entry');
+    this.updateTopButton();
+    this.configureResourceAutoEnter();
+  }
+
+  updateTopButton() {
+    if (!this.topButton) return;
+    this.topButton.removeAttribute('title');
+    this.topButton.classList.add('ariaLabel');
+    this.topButton.setAttribute('aria-label', `${this.active ? '退出' : '进入'}沉浸模式 · Alt+Shift+I`);
+    this.topButton.innerHTML = this.active ? EXIT_ICON : ENTER_ICON;
+  }
+
+  configureResourceAutoEnter() {
+    this.resourceObserver?.disconnect(); this.resourceObserver = null;
+    if (this.resourceEnterFrame != null) window.cancelAnimationFrame(this.resourceEnterFrame);
+    this.resourceEnterFrame = null;
+    this.pendingResourceTabs = new Set();
+    if (this.disposed || !this.settingsData.autoEnterOnResourceOpen || !this.topButton?.isConnected) return;
+    const center = document.querySelector('.layout__center');
+    if (!center) return;
+    const selector = '.layout-tab-bar:not(.layout-tab-bar--readonly) > [data-id]';
+    this.knownResourceTabs = new WeakSet(center.querySelectorAll(selector));
+    this.resourceObserver = new MutationObserver(records => {
+      for (const record of records) {
+        const target = record.target;
+        // Only tab/layout insertions matter; never rescan editor text changes.
+        if (target.closest('.layout-tab-container, .protyle')) continue;
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          const tabs = node.matches(selector) ? [node] : node.querySelectorAll(selector);
+          for (const tab of tabs) {
+            if (!this.knownResourceTabs.has(tab)) {
+              this.knownResourceTabs.add(tab);
+              if (!this.active) this.pendingResourceTabs.add(tab);
+            }
+          }
+        }
+      }
+      if (!this.pendingResourceTabs.size || this.active || this.resourceEnterFrame != null) return;
+      this.resourceEnterFrame = window.requestAnimationFrame(() => {
+        this.resourceEnterFrame = null;
+        const opened = [...this.pendingResourceTabs].some(tab => center.contains(tab) && tab.matches(selector));
+        this.pendingResourceTabs.clear();
+        if (opened && !this.disposed && this.settingsData.autoEnterOnResourceOpen && !this.active) this.enter();
+      });
+    });
+    this.resourceObserver.observe(center, { childList: true, subtree: true });
   }
 
   listen(target, type, fn, options) {
@@ -100,6 +187,7 @@ module.exports = class ImmersiveMode extends Plugin {
   enter() {
     if (this.active || this.disposed || !this.topButton?.isConnected) return;
     try {
+      discoverActions(document, this.topButton, this.app?.plugins, this.actionPositions);
       this.active = true;
       this.styleElement = document.createElement('style');
       this.styleElement.id = 'sim-style';
@@ -107,36 +195,69 @@ module.exports = class ImmersiveMode extends Plugin {
       document.head.append(this.styleElement);
       this.orb = button('', 'sim-orb', () => {
         if (this.suppressClick) { this.suppressClick = false; return; }
+        if (this.menu && this.menuOpenedByHover) {
+          this.menuOpenedByHover = false;
+          this.menu.querySelector('button')?.focus({ preventScroll: true });
+          return;
+        }
         if (this.menu) this.closeMenu(); else this.openMenu();
       });
-      this.orb.title = '沉浸模式 · 点击打开功能 / 拖动调整位置';
+      this.orb.title = '沉浸模式 · 悬停展开功能 / 拖动调整位置';
       this.orb.setAttribute('aria-label', '沉浸模式功能菜单');
       this.orb.setAttribute('aria-expanded', 'false');
       this.orb.setAttribute('aria-haspopup', 'dialog');
       document.body.append(this.orb);
+      this.listen(this.orb, 'pointerenter', event => {
+        if (event.pointerType !== 'mouse' || event.buttons || this.drag || this.menu) return;
+        this.openMenu(false);
+        this.menuOpenedByHover = true;
+      });
+      if (this.isDesktopClient) {
+        this.dragRegion = document.createElement('div');
+        this.dragRegion.className = 'sim-window-drag';
+        this.dragRegion.title = '拖动移动窗口';
+        this.dragRegion.setAttribute('aria-hidden', 'true');
+        document.body.append(this.dragRegion);
+      }
       document.body.classList.add('sim-active');
       this.applyTopBarSetting();
-      this.topButton.title = '退出沉浸模式 · Alt+Shift+I';
+      this.showDefaultPageTools();
+      this.updateTopButton();
       this.markLayoutRows();
       this.bindOrbDrag();
       this.placeOrb();
       this.listen(window, 'resize', () => { this.placeOrb(); this.placeMenu(); this.queueMergedTabs(); });
       this.listen(document, 'pointerdown', event => {
-        if (!this.menu?.contains(event.target) && !this.orb.contains(event.target)) this.closeMenu();
-        if (![...this.nativeReveals].some(el => el.contains(event.target))) this.clearNativeTools();
+        if (!this.menu?.contains(event.target) && !this.submenu?.contains(event.target) && !this.orb.contains(event.target)) this.closeMenu();
+        if (![...this.nativeReveals].some(el => el.contains(event.target))) this.clearNativeTools(true);
       }, true);
       this.listen(document, 'keydown', event => {
+        if (event.key === 'Escape' && this.submenu) {
+          // SiYuan owns deeper nested menus and their keyboard navigation.
+          if (this.submenu.querySelector('.b3-menu__item--show')) return;
+          event.preventDefault(); event.stopPropagation(); this.closeSubmenu(true); return;
+        }
         if (event.key === 'Escape' && (this.menu || this.nativeReveals.size)) {
-          event.preventDefault(); event.stopPropagation(); this.closeMenu(true); this.clearNativeTools();
+          event.preventDefault(); event.stopPropagation(); this.closeMenu(true); this.clearNativeTools(true);
         }
       }, true);
       // Observe chrome only: do not rescan the document on every editor keystroke.
       this.observer = new MutationObserver(records => {
+        // Refresh only sync's tooltip, avoiding a render/hover/request loop.
+        if (records.every(record => record.target.id === 'barSync' && record.type === 'attributes' && ['aria-label', 'data-title', 'title'].includes(record.attributeName))) {
+          this.updateSyncTip(); return;
+        }
         if (!records.some(record => !(record.target.nodeType === 1 ? record.target : record.target.parentElement)?.closest('.layout-tab-container, .protyle'))) return;
+        this.syncDefaultPageTools();
+        this.updateWindowButtons();
         if (!this.menu || this.refreshTimer) return;
         this.refreshTimer = setTimeout(() => { this.refreshTimer = null; if (this.active && this.menu) this.renderMenu(); }, 120);
       });
-      document.querySelectorAll('#toolbar, #dockLeft, #dockRight, #dockBottom, .layout__center').forEach(el => this.observer.observe(el, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-label', 'aria-selected', 'disabled', 'data-title', 'hidden'] }));
+      document.querySelectorAll('#toolbar, #dockLeft, #dockRight, #dockBottom, .layout__center').forEach(el => this.observer.observe(el, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'aria-label', 'aria-selected', 'aria-disabled', 'disabled', 'data-title', 'title', 'hidden'] }));
+      if (this.isDesktopClient) {
+        this.windowStateObserver = new MutationObserver(() => this.updateWindowButtons());
+        this.windowStateObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+      }
     } catch (error) {
       this.leave();
       console.error('[immersive-mode] Enter failed', error);
@@ -154,7 +275,8 @@ module.exports = class ImmersiveMode extends Plugin {
 
   applyTopBarSetting() {
     const keep = this.active && this.isWindowsDesktop && this.settingsData.windowsTopBar;
-    document.body.classList.toggle('sim-window-strip', !!(this.active && this.isWindowsDesktop));
+    this.clearNativeTools(true);
+    document.body.classList.toggle('sim-window-strip', !!keep);
     document.body.classList.toggle('sim-keep-topbar', !!keep);
     if (keep) this.startMergedTabs(); else this.stopMergedTabs();
     if (this.menu) this.renderMenu();
@@ -180,10 +302,29 @@ module.exports = class ImmersiveMode extends Plugin {
     this.tabLayoutFrame = window.requestAnimationFrame(() => { this.tabLayoutFrame = null; this.syncMergedTabs(); });
   }
 
+  fitTopbarTools(pageLeft) {
+    const toolbar = document.getElementById('toolbar');
+    if (!toolbar) return;
+    const style = window.getComputedStyle(toolbar);
+    const gap = parseFloat(style.columnGap) || 0;
+    let right = toolbar.getBoundingClientRect().left + (parseFloat(style.paddingLeft) || 0);
+    for (const child of toolbar.children) {
+      if (child.id === 'drag') break;
+      if (child.matches('.fn__none, [hidden]')) continue;
+      const hidden = child.classList.contains('sim-topbar-overflow');
+      const childStyle = window.getComputedStyle(child);
+      const width = hidden ? this.topbarOverflow.get(child) : child.getBoundingClientRect().width + (parseFloat(childStyle.marginLeft) || 0) + (parseFloat(childStyle.marginRight) || 0);
+      if (!width) continue;
+      right += width + gap;
+      const overflow = right > pageLeft;
+      if (overflow && !hidden) { this.topbarOverflow.set(child, width); child.classList.add('sim-topbar-overflow'); }
+      else if (!overflow && hidden) { child.classList.remove('sim-topbar-overflow'); this.topbarOverflow.delete(child); }
+    }
+  }
+
   syncMergedTabs() {
     if (!this.tabMergeObserver) return;
     const drag = document.querySelector('#toolbar #drag');
-    const rect = drag?.getBoundingClientRect();
     const candidates = [];
     for (const wnd of document.querySelectorAll('.layout__center [data-type="wnd"]')) {
       if (wnd.closest('.fn__none, [hidden]') || window.getComputedStyle(wnd).display === 'none') continue;
@@ -191,13 +332,23 @@ module.exports = class ImmersiveMode extends Plugin {
       if (!bounds.width || !bounds.height) continue;
       const row = [...wnd.children].find(element => element.classList.contains('fn__flex') && [...element.children].some(child => child.classList.contains('layout-tab-bar')));
       if (!row || row.matches('.fn__none, [hidden]')) continue;
-      candidates.push({ row, wnd, weight: bounds.width });
+      const page = wnd.querySelector(':scope > .layout-tab-container');
+      const pageRect = page?.getBoundingClientRect();
+      candidates.push({ row, wnd, page, bounds: pageRect?.width ? pageRect : bounds });
     }
-    const slots = rect ? mergedTabSlots(rect.left, Math.min(rect.right, innerWidth - 8), candidates.map(item => item.weight)) : [];
+    if (candidates.length) this.fitTopbarTools(Math.min(...candidates.map(item => item.bounds.left)));
+    const rect = drag?.getBoundingClientRect();
+    candidates.sort((a, b) => a.bounds.left - b.bounds.left || Number(b.wnd.classList.contains('layout__wnd--active')) - Number(a.wnd.classList.contains('layout__wnd--active')));
+    const slots = candidates.map(({ bounds }, index) => {
+      if (index && bounds.left === candidates[index - 1].bounds.left) return null;
+      const next = candidates.slice(index + 1).find(item => item.bounds.left > bounds.left);
+      const end = Math.min(bounds.right, next ? next.bounds.left - 4 : innerWidth - 8, rect ? rect.right - 48 : innerWidth - 8);
+      return { left: bounds.left, width: Math.max(0, end - bounds.left) };
+    });
     const nextRows = new Set();
     candidates.forEach(({ row }, index) => {
       const slot = slots[index];
-      if (!slot || slot.width < 1) return; // The existing page chooser remains available in tiny windows.
+      if (!slot || slot.width < 1) return; // Never place tabs over native tools in a crowded toolbar.
       nextRows.add(row);
       if (!this.mergedRows.has(row)) this.mergedRows.set(row, {
         hadClass: row.classList.contains('sim-merged-tabs'),
@@ -211,7 +362,7 @@ module.exports = class ImmersiveMode extends Plugin {
     });
     for (const row of this.mergedRows.keys()) if (!nextRows.has(row)) this.restoreMergedRow(row);
     const tabTargets = this.syncTabSwitchers(nextRows);
-    const targets = new Set([drag, document.getElementById('toolbar'), ...candidates.map(item => item.wnd), ...tabTargets].filter(Boolean));
+    const targets = new Set([drag, document.getElementById('toolbar'), ...candidates.flatMap(item => [item.wnd, item.page]), ...tabTargets].filter(Boolean));
     for (const target of this.tabResizeTargets) if (!targets.has(target)) this.tabResizeObserver?.unobserve(target);
     for (const target of targets) if (!this.tabResizeTargets.has(target)) this.tabResizeObserver?.observe(target);
     this.tabResizeTargets = targets;
@@ -268,6 +419,8 @@ module.exports = class ImmersiveMode extends Plugin {
     this.tabLayoutFrame = null;
     for (const row of this.mergedRows.keys()) this.restoreMergedRow(row);
     for (const element of this.tabSwitchers.keys()) this.restoreTabSwitcher(element);
+    for (const element of this.topbarOverflow.keys()) element.classList.remove('sim-topbar-overflow');
+    this.topbarOverflow.clear();
   }
 
   bindOrbDrag() {
@@ -315,8 +468,8 @@ module.exports = class ImmersiveMode extends Plugin {
     this.orb.style.top = `${point.y}px`;
   }
 
-  openMenu() {
-    this.clearNativeTools();
+  openMenu(focus = true) {
+    this.clearNativeTools(true);
     this.closeMenu();
     this.tabsExpanded = false;
     this.menu = document.createElement('section');
@@ -324,43 +477,48 @@ module.exports = class ImmersiveMode extends Plugin {
     this.menu.setAttribute('role', 'dialog');
     this.menu.setAttribute('aria-label', '沉浸模式功能');
     this.menu.tabIndex = -1;
+    this.menu.addEventListener('scroll', () => { this.placeSubmenu(); this.updateSyncTip(); }, true);
+    // Native menus lock wheel events outside their own DOM. Allow the primary
+    // card to scroll while a child card is open, without changing host hooks.
+    this.menu.addEventListener('wheel', event => { if (this.submenu) event.stopPropagation(); }, { passive: true });
     document.body.append(this.menu);
     this.orb.classList.add('sim-orb--active');
     this.orb.setAttribute('aria-expanded', 'true');
     this.renderMenu();
-    this.menu.querySelector('button')?.focus({ preventScroll: true });
+    if (focus) this.menu.querySelector('button')?.focus({ preventScroll: true });
   }
 
   actions() {
     return [
-      ...discoverActions(document, this.topButton, this.app?.plugins)
-        .filter(action => !document.body.classList.contains('sim-keep-topbar') || action.group !== 'top')
-        .map(action => ({ ...action, run: () => this.invokeSource(action.element) })),
-      { key: 'builtin:page-tools', title: '页面工具', icon: 'iconMore', origin: '补充', group: 'page', run: () => this.revealPageTools() },
+      ...discoverActions(document, this.topButton, this.app?.plugins, this.actionPositions)
+        .filter(action => !document.body.classList.contains('sim-keep-topbar') || action.group !== 'top' || action.element.closest('.sim-topbar-overflow'))
+        .map(action => ({ ...action, hasSubmenu: action.hasSubmenu || this.knownMenuSources.has(action.element), run: () => this.invokeSource(action.element) })),
       ...(!document.body.classList.contains('sim-keep-topbar') ? [{ key: 'builtin:toolbar', title: '原生工具栏（手动展开）', icon: 'iconMenu', origin: '补充', group: 'top', run: () => this.revealToolbar() }] : []),
-      { key: 'builtin:settings', title: '思源设置', icon: 'iconSettings', origin: '补充', group: 'page', run: () => openSetting(this.app) },
     ];
   }
 
   renderMenu() {
     if (!this.menu) return;
+    this.hideSyncTip();
+    this.cancelSubmenuHover();
     const focusedKey = document.activeElement?.dataset?.actionKey;
+    const focusedControl = document.activeElement?.dataset?.controlKey;
     const focusedTab = document.activeElement?.dataset?.tabKey;
     const focusedToggle = document.activeElement?.classList.contains('sim-tabs-toggle');
     const oldScroll = this.menu.querySelector(".sim-menu-other-scroll")?.scrollTop || 0;
-    const oldTabScroll = this.menu.querySelector('.sim-tab-list')?.scrollTop || 0;
     this.menu.className = "sim-menu";
     this.menu.replaceChildren();
     const header = document.createElement("div");
     header.className = "sim-menu-header";
     const title = document.createElement("strong");
     title.textContent = "沉浸模式";
-    const hint = document.createElement("small");
-    hint.textContent = "Alt+Shift+I";
-    header.append(title, hint);
-    const tabPanel = this.createTabPanel();
+    header.append(title);
+    const keepTopbar = this.isWindowsDesktop && this.settingsData.windowsTopBar;
+    const tabPanel = keepTopbar ? null : this.createTabPanel();
     const scroll = document.createElement("div");
     scroll.className = "sim-menu-other-scroll";
+    if (tabPanel) scroll.append(tabPanel);
+    scroll.addEventListener('scroll', () => this.closeSubmenu(), { passive: true });
     const actions = this.actions();
     const sections = ACTION_GROUPS.map(([group, title]) => ({ group, title, items: actions.filter(action => action.group === group) }));
     for (const { group, title, items } of sections) {
@@ -374,10 +532,42 @@ module.exports = class ImmersiveMode extends Plugin {
       for (const action of items) {
         const row = document.createElement("div");
         row.className = "sim-row";
-        const launch = button("", "sim-action", () => this.runAction(action));
+        const dock = action.element?.classList.contains('dock__item');
+        if (dock) {
+          row.classList.add('sim-row--dock');
+          row.classList.toggle('sim-row--active', action.element.classList.contains('dock__item--active'));
+          row.classList.toggle('sim-row--activefocus', action.element.classList.contains('dock__item--activefocus'));
+        }
+        const launch = button("", `sim-action${action.hasSubmenu ? ' sim-action--submenu' : ''}`, event => {
+          event.stopPropagation();
+          if (action.mayOpenMenu) this.openSubmenu(action); else this.runAction(action);
+        });
         launch.dataset.actionKey = action.key;
-        launch.title = action.title;
+        if (action.element?.id !== 'barSync') launch.title = action.title;
         launch.setAttribute("aria-label", action.title);
+        if (dock) launch.setAttribute('aria-pressed', String(action.element.matches('.dock__item--active, .dock__item--activefocus')));
+        if (action.hasSubmenu) {
+          launch.setAttribute('aria-haspopup', 'dialog');
+          launch.setAttribute('aria-expanded', String(this.submenuAction?.key === action.key));
+        }
+        row.addEventListener('pointerenter', event => {
+          if (event.pointerType !== 'mouse' || event.buttons || this.drag) return;
+          this.cancelSubmenuHover();
+          // Entering a different item dismisses the previous card even when
+          // this item is a direct action. Leaving toward the child does not.
+          if (this.submenuAction && this.submenuAction.key !== action.key) this.closeSubmenu();
+          if (action.element?.id === 'barSync') this.showSyncTip(launch, action.element);
+          if (!action.hasSubmenu) return;
+          this.submenuHoverTimer = setTimeout(() => {
+            this.submenuHoverTimer = null;
+            if (this.active && row.isConnected && !this.drag) this.openSubmenu(action, true);
+          }, 180);
+        });
+        row.addEventListener('pointerleave', () => { this.cancelSubmenuHover(); if (action.element?.id === 'barSync') this.hideSyncTip(); });
+        if (action.element?.id === 'barSync') {
+          launch.addEventListener('focus', () => this.showSyncTip(launch, action.element));
+          launch.addEventListener('blur', () => this.hideSyncTip());
+        }
         const sourceIcon = action.element?.querySelector("svg use");
         const href = sourceIcon?.getAttribute("xlink:href") || sourceIcon?.getAttribute("href") || (action.icon ? `#${action.icon.replace(/^#/, "")}` : "");
         if (href?.startsWith("#")) {
@@ -394,33 +584,122 @@ module.exports = class ImmersiveMode extends Plugin {
           launch.append(icon);
         }
         const label = document.createElement("span");
+        label.className = 'sim-action-label';
         label.textContent = action.title;
         launch.append(label);
-        const origin = document.createElement("small");
-        origin.className = "sim-origin";
-        origin.textContent = action.origin || "补充";
-        origin.title = ACTION_GROUPS.find(([key]) => key === action.group)?.[1] || '';
-        row.append(launch, origin);
+        if (action.hasSubmenu) {
+          const arrow = document.createElement('span');
+          arrow.className = 'sim-submenu-chevron';
+          arrow.textContent = '›';
+          arrow.setAttribute('aria-hidden', 'true');
+          launch.append(arrow);
+        }
+        row.append(launch);
         container.append(row);
       }
     }
-    const footer = document.createElement("div");
-    footer.className = "sim-footer";
-    footer.append(button("设置", "", () => {
-      this.closeMenu();
-      this.setting.open("沉浸模式设置");
-    }), button("退出沉浸", "", () => this.leave()));
-    this.menu.append(header, tabPanel, scroll, footer);
+    const settingsRow = document.createElement('div');
+    settingsRow.className = 'sim-row sim-plugin-settings';
+    const settings = button('', 'sim-action', () => { this.closeMenu(); this.setting.open('沉浸模式设置'); });
+    settings.dataset.actionKey = 'builtin:plugin-settings';
+    setButtonIcon(settings, '插件设置', 'settings');
+    const settingsLabel = document.createElement('span'); settingsLabel.textContent = '插件设置';
+    settings.append(settingsLabel); settingsRow.append(settings); scroll.append(settingsRow);
+    settingsRow.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !event.buttons) this.closeSubmenu(); });
+    this.windowActions = null;
+    this.menu.append(header);
+    this.menu.append(scroll);
+    if (!keepTopbar) this.menu.append(this.createWindowActions());
+    this.updateWindowButtons();
     scroll.scrollTop = oldScroll;
-    tabPanel.querySelector('.sim-tab-list').scrollTop = oldTabScroll;
     this.placeMenu();
+    if (this.submenuAction) {
+      const current = actions.find(action => action.key === this.submenuAction.key);
+      if (current) this.submenuAction = current; else this.closeSubmenu();
+    }
     if (focusedKey) [...this.menu.querySelectorAll('.sim-action')].find(el => el.dataset.actionKey === focusedKey)?.focus({ preventScroll: true });
     if (focusedTab) [...this.menu.querySelectorAll('.sim-tab')].find(el => el.dataset.tabKey === focusedTab)?.focus({ preventScroll: true });
     if (focusedToggle) this.menu.querySelector('.sim-tabs-toggle')?.focus({ preventScroll: true });
+    if (focusedControl) this.windowActions?.querySelector(`[data-control-key="${focusedControl}"]`)?.focus({ preventScroll: true });
+  }
+
+  createWindowActions() {
+    const actions = document.createElement('div');
+    actions.className = 'sim-window-actions sim-footer';
+    actions.setAttribute('role', 'toolbar'); actions.setAttribute('aria-label', '窗口与沉浸模式控制');
+    actions.append(iconButton('exit', '退出沉浸', 'exit', () => this.leave()));
+    if (this.isDesktopClient) {
+      actions.append(
+        iconButton('minimize', '最小化', 'minimize', () => this.invokeWindowControl('minWindow')),
+        iconButton('maximize', '最大化', 'maximize', () => this.invokeWindowControl(document.body.classList.contains('body--maximize') ? 'restoreWindow' : 'maxWindow')),
+        iconButton('close', '关闭窗口', 'close', () => this.invokeWindowControl('closeWindow')));
+    }
+    this.windowActions = actions;
+    actions.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !event.buttons) this.closeSubmenu(); });
+    return actions;
+  }
+
+  updateWindowButtons() {
+    if (!this.windowActions || !this.isDesktopClient) return;
+    const maximized = document.body.classList.contains('body--maximize');
+    const maximize = this.windowActions.querySelector('[data-control-key="maximize"]');
+    if (maximize) setButtonIcon(maximize, maximized ? '还原' : '最大化', maximized ? 'restore' : 'maximize');
+    for (const [key, id] of [['minimize', 'minWindow'], ['maximize', maximized ? 'restoreWindow' : 'maxWindow'], ['close', 'closeWindow']]) {
+      const control = this.windowActions.querySelector(`[data-control-key="${key}"]`);
+      const source = document.getElementById(id);
+      if (control) control.disabled = !source || source.matches('[disabled], [aria-disabled="true"]');
+    }
+  }
+
+  invokeWindowControl(id) {
+    if (!this.isDesktopClient) return;
+    const source = document.getElementById(id);
+    if (!source || source.matches('[disabled], [aria-disabled="true"]')) return;
+    // Proxy a click only; native controls keep their parent, order and handlers.
+    this.closeMenu();
+    source.click();
+  }
+
+  cancelSubmenuHover() {
+    clearTimeout(this.submenuHoverTimer); this.submenuHoverTimer = null;
+  }
+
+  showSyncTip(anchor, source) {
+    if (this.syncTipAnchor === anchor) return;
+    this.hideSyncTip();
+    this.syncTipAnchor = anchor; this.syncTipSource = source;
+    this.syncTip = document.createElement('div');
+    this.syncTip.className = 'sim-sync-tip'; this.syncTip.id = 'sim-sync-tip';
+    this.syncTip.setAttribute('role', 'tooltip');
+    anchor.setAttribute('aria-describedby', this.syncTip.id);
+    document.body.append(this.syncTip);
+    this.updateSyncTip();
+    // Reuse SiYuan's read-only info request; never trigger its sync click.
+    source.dispatchEvent(new window.MouseEvent('mouseenter'));
+  }
+
+  updateSyncTip() {
+    if (!this.syncTip || !this.syncTipAnchor?.isConnected) return;
+    const source = this.syncTipSource;
+    const raw = source.getAttribute('aria-label') || source.getAttribute('data-title') || source.title || '暂无同步信息';
+    const parser = document.createElement('template');
+    parser.innerHTML = raw.replace(/<br\s*\/?\s*>/gi, '\n');
+    this.syncTip.textContent = stripShortcuts(parser.content.textContent || '').trim() || '暂无同步信息';
+    const rect = this.syncTipAnchor.getBoundingClientRect();
+    const bounds = this.syncTip.getBoundingClientRect();
+    const left = this.settingsData.side === 'right' ? this.menu.getBoundingClientRect().left - bounds.width - 6 : this.menu.getBoundingClientRect().right + 6;
+    this.syncTip.style.left = `${clamp(left, 8, innerWidth - bounds.width - 8)}px`;
+    this.syncTip.style.top = `${clamp(rect.top, 8, innerHeight - bounds.height - 8)}px`;
+  }
+
+  hideSyncTip() {
+    this.syncTipAnchor?.removeAttribute('aria-describedby');
+    this.syncTip?.remove(); this.syncTip = null; this.syncTipAnchor = null; this.syncTipSource = null;
   }
 
   createTabPanel() {
     const panel = document.createElement('section'); panel.className = 'sim-menu-tabs';
+    panel.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !event.buttons) this.closeSubmenu(); });
     const tabs = [...document.querySelectorAll('.layout__center .layout-tab-bar:not(.layout-tab-bar--readonly) > [data-id]')];
     const heading = document.createElement('h3'); heading.textContent = '页签';
     const count = document.createElement('small'); count.textContent = String(tabs.length); heading.append(count);
@@ -457,6 +736,114 @@ module.exports = class ImmersiveMode extends Plugin {
     catch (error) { console.error('[immersive-mode] Action failed', error); showMessage('该入口未能打开，可通过“原生工具栏”重试，或 Alt+Shift+I 退出沉浸。', 6000, 'error'); }
   }
 
+  openSubmenu(action, fromHover = false) {
+    this.cancelSubmenuHover();
+    if (!action?.mayOpenMenu) return this.runAction(action);
+    if (this.submenuAction?.key === action.key) {
+      if (fromHover) return;
+      if (this.submenuOpenedByHover) { this.submenuOpenedByHover = false; return; }
+      this.closeSubmenu(true); return;
+    }
+    this.closeSubmenu();
+    this.submenuAction = action;
+    this.submenuOpenedByHover = fromHover;
+    this.menusBeforeAction = new Set(this.visibleNativeMenus());
+    this.dialogsBeforeAction = new Set(document.querySelectorAll('.b3-dialog, dialog[open], [role="dialog"]'));
+    this.nativeMenuObserver = new MutationObserver(records => {
+      if (records.some(record => {
+        const element = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        return element === document.body || element?.closest('.b3-menu, .b3-dialog, dialog');
+      })) this.syncSubmenu();
+    });
+    this.nativeMenuObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    // Invoke the original entry ONCE. It creates the real menu (including its
+    // disabled/check states and nested handlers), or opens its original panel.
+    try {
+      const anchor = this.menuActionElement(action.key)?.getBoundingClientRect();
+      this.invokeSource(action.element, anchor);
+      this.syncSubmenu();
+      if (this.submenuAction && !this.submenu) this.submenuTimer = setTimeout(() => {
+        this.submenuTimer = null;
+        if (!this.submenu && this.submenuAction) this.closeMenu();
+      }, 1500);
+    } catch (error) {
+      this.closeMenu();
+      console.error('[immersive-mode] Native menu failed', error);
+      showMessage('该入口未能打开，可通过原生工具栏重试。', 5000, 'error');
+    }
+  }
+
+  menuActionElement(key) {
+    return [...(this.menu?.querySelectorAll('[data-action-key]') || [])].find(element => element.dataset.actionKey === key);
+  }
+
+  visibleNativeMenus() {
+    return [...document.querySelectorAll('.b3-menu')].filter(element => {
+      if (element.closest('.fn__none, .fn__hidden, [hidden], .protyle, .layout__center')) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+  }
+
+  syncSubmenu() {
+    if (!this.menu || !this.submenuAction) return;
+    const visible = this.visibleNativeMenus();
+    if (this.submenu) {
+      if (!visible.includes(this.submenu)) { this.closeSubmenu(false, false); return; }
+      this.placeSubmenu();
+      return;
+    }
+    const element = visible.find(menu => !this.menusBeforeAction.has(menu));
+    if (!element) {
+      const dialog = [...document.querySelectorAll('.b3-dialog, dialog[open], [role="dialog"]')]
+        .find(node => !this.dialogsBeforeAction.has(node));
+      if (dialog) this.closeMenu();
+      return;
+    }
+    clearTimeout(this.submenuTimer); this.submenuTimer = null;
+    this.submenu = element;
+    this.knownMenuSources.add(this.submenuAction.element);
+    this.submenuStyle = ['--sim-submenu-left', '--sim-submenu-top'].map(key => [key, element.style.getPropertyValue(key), element.style.getPropertyPriority(key)]);
+    this.submenuHadClass = element.classList.contains('sim-native-submenu');
+    element.classList.add('sim-native-submenu');
+    this.nativeMenuScrollHandler = () => this.placeSubmenu();
+    element.addEventListener('scroll', this.nativeMenuScrollHandler, true);
+    this.menuActionElement(this.submenuAction.key)?.setAttribute('aria-expanded', 'true');
+    this.placeSubmenu();
+  }
+
+  closeSubmenu(focusParent = false, dismiss = true) {
+    this.cancelSubmenuHover();
+    this.submenuOpenedByHover = false;
+    const key = this.submenuAction?.key;
+    const element = this.submenu;
+    this.nativeMenuObserver?.disconnect(); this.nativeMenuObserver = null;
+    clearTimeout(this.submenuTimer); this.submenuTimer = null;
+    this.submenu = null; this.submenuAction = null;
+    this.menusBeforeAction = null; this.dialogsBeforeAction = null;
+    if (element) {
+      element.removeEventListener('scroll', this.nativeMenuScrollHandler, true);
+      if (!this.submenuHadClass) element.classList.remove('sim-native-submenu');
+      for (const [prop, value, priority] of this.submenuStyle || []) {
+        if (value) element.style.setProperty(prop, value, priority); else element.style.removeProperty(prop);
+      }
+      // Never remove/reparent the host's menu element. Let its owner clean up
+      // callbacks, scroll locks and reusable menu state.
+      const owner = Object.values(window.siyuan?.menus || {}).find(menu => menu?.element === element);
+      if (dismiss && owner?.remove) owner.remove();
+    }
+    this.nativeMenuScrollHandler = null;
+    for (const [child, saved] of this.childMenuPositions) {
+      if (!saved.hadClass) child.classList.remove('sim-child-positioned');
+      if (saved.value) child.style.setProperty('--sim-child-top', saved.value, saved.priority);
+      else child.style.removeProperty('--sim-child-top');
+    }
+    this.childMenuPositions.clear();
+    this.submenuStyle = null;
+    this.menuActionElement(key)?.setAttribute('aria-expanded', 'false');
+    if (focusParent) this.menuActionElement(key)?.focus({ preventScroll: true });
+  }
+
   placeMenu() {
     if (!this.menu || !this.orb) return;
     const orb = this.orb.getBoundingClientRect();
@@ -464,20 +851,56 @@ module.exports = class ImmersiveMode extends Plugin {
     const x = this.settingsData.side === 'right' ? orb.left - width - 10 : orb.right + 10;
     this.menu.style.left = `${clamp(x, 8, innerWidth - width - 8)}px`;
     this.menu.style.top = `${clamp(orb.top - height / 2 + 21, 8, innerHeight - height - 8)}px`;
+    this.placeSubmenu();
+    this.updateSyncTip();
+  }
+
+  placeSubmenu() {
+    if (!this.submenu || !this.menu) return;
+    const primary = this.menu.getBoundingClientRect();
+    const { width, height } = this.submenu.getBoundingClientRect();
+    const gap = 8;
+    const preferRight = this.settingsData.side === 'left';
+    let x = preferRight ? primary.right + gap : primary.left - width - gap;
+    if (x < 8 || x + width > innerWidth - 8) x = preferRight ? primary.left - width - gap : primary.right + gap;
+    const anchor = this.menuActionElement(this.submenuAction?.key)?.getBoundingClientRect();
+    const values = [['--sim-submenu-left', clamp(x, 8, innerWidth - width - 8)],
+      ['--sim-submenu-top', clamp(anchor?.top || primary.top, 8, innerHeight - height - 8)]];
+    for (const [prop, value] of values) {
+      const pixel = `${Math.round(value)}px`;
+      if (this.submenu.style.getPropertyValue(prop) !== pixel) this.submenu.style.setProperty(prop, pixel);
+    }
+    // Host nested menus also need to fit above the viewport bottom. Keep their
+    // native horizontal placement and handlers; only constrain the vertical edge.
+    for (const child of this.submenu.querySelectorAll('.b3-menu__submenu')) {
+      const rect = child.getBoundingClientRect();
+      if (!rect.height || window.getComputedStyle(child).display === 'none') continue;
+      if (!this.childMenuPositions.has(child)) this.childMenuPositions.set(child, {
+        hadClass: child.classList.contains('sim-child-positioned'),
+        value: child.style.getPropertyValue('--sim-child-top'), priority: child.style.getPropertyPriority('--sim-child-top'),
+      });
+      const parentTop = child.parentElement.getBoundingClientRect().top;
+      const top = `${Math.round(clamp(parentTop, 8, innerHeight - rect.height - 8))}px`;
+      if (!child.classList.contains('sim-child-positioned')) child.classList.add('sim-child-positioned');
+      if (child.style.getPropertyValue('--sim-child-top') !== top) child.style.setProperty('--sim-child-top', top);
+    }
   }
 
   closeMenu(focusOrb = false) {
+    this.hideSyncTip();
     this.menu?.remove(); this.menu = null;
+    this.windowActions = null;
+    this.closeSubmenu();
+    this.menuOpenedByHover = false;
     this.orb?.classList.remove('sim-orb--active');
     this.orb?.setAttribute('aria-expanded', 'false');
     if (focusOrb) this.orb?.focus({ preventScroll: true });
   }
 
-  invokeSource(element) {
+  invokeSource(element, anchor = this.orb.getBoundingClientRect()) {
     if (!element.isConnected) { showMessage('此入口已不可用，请重新打开菜单。'); return; }
     // Keep the real node and event bubbling chain. Supply an on-screen anchor while
     // the hidden chrome measures zero; restore every own descriptor on the next frame.
-    const anchor = this.orb.getBoundingClientRect();
     const restores = [];
     for (const target of [element, ...element.querySelectorAll('svg')]) {
       const descriptor = Object.getOwnPropertyDescriptor(target, 'getBoundingClientRect');
@@ -492,48 +915,96 @@ module.exports = class ImmersiveMode extends Plugin {
   }
 
   revealPageTools() {
-    const candidates = [...document.querySelectorAll('.layout__center .protyle:not(.fn__none) .protyle-breadcrumb')];
-    const element = candidates.find(el => el.closest('.layout__wnd--active')) || candidates.find(el => !el.closest('.fn__none'));
+    const element = this.findPageTools();
     if (!element) { showMessage('当前页面没有可用的文档工具。'); return; }
-    this.clearNativeTools(); element.classList.add('sim-page-tools'); this.nativeReveals.add(element);
+    this.clearNativeTools(false); element.classList.add('sim-page-tools'); this.nativeReveals.add(element);
     showMessage('已显示原生页面工具；点击其他位置或按 Esc 收起。', 2500);
+  }
+
+  findPageTools() {
+    const candidates = [...document.querySelectorAll('.layout__center .protyle:not(.fn__none) .protyle-breadcrumb')]
+      .filter(element => !element.closest('.fn__none, [hidden]'));
+    return candidates.find(element => element.closest('.layout__wnd--active')) || candidates[0];
+  }
+
+  showDefaultPageTools() {
+    const element = this.findPageTools();
+    if (!element) return;
+    element.classList.add('sim-page-tools');
+    this.nativeReveals.add(element);
+    this.defaultPageTools.add(element);
+  }
+
+  syncDefaultPageTools() {
+    if (!this.active) return;
+    // A deliberately revealed toolbar/page tool takes precedence until it is
+    // dismissed, so editor mutations do not unexpectedly steal the surface.
+    if ([...this.nativeReveals].some(element => !this.defaultPageTools.has(element))) return;
+    const current = this.findPageTools();
+    const defaults = [...this.defaultPageTools].filter(element => element.isConnected);
+    if (current === (defaults.length === 1 ? defaults[0] : null) && defaults.length === this.defaultPageTools.size) return;
+    this.clearNativeTools(false);
+    this.showDefaultPageTools();
   }
 
   revealToolbar() {
     if (document.body.classList.contains('sim-keep-topbar')) return;
     const element = document.getElementById('toolbar');
     if (!element) { this.leave(); return; }
-    this.clearNativeTools(); element.classList.add('sim-native-tools'); this.nativeReveals.add(element);
+    this.clearNativeTools(false); element.classList.add('sim-native-tools'); this.nativeReveals.add(element);
     showMessage('已临时显示原生工具栏；点击其他位置或按 Esc 收起。', 2500);
   }
 
-  clearNativeTools() {
-    for (const element of this.nativeReveals) element.classList.remove('sim-page-tools', 'sim-native-tools');
-    this.nativeReveals.clear();
+  clearNativeTools(preservePageTools = true) {
+    for (const element of this.nativeReveals) {
+      if (preservePageTools && this.defaultPageTools.has(element)) continue;
+      element.classList.remove('sim-page-tools', 'sim-native-tools');
+      this.defaultPageTools.delete(element);
+    }
+    this.nativeReveals = new Set(preservePageTools ? [...this.nativeReveals].filter(element => this.defaultPageTools.has(element)) : []);
   }
 
   leave() {
+    const wasActive = this.active;
     this.active = false;
+    if (this.resourceEnterFrame != null) window.cancelAnimationFrame(this.resourceEnterFrame);
+    this.resourceEnterFrame = null; this.pendingResourceTabs?.clear();
     this.stopMergedTabs();
     this.observer?.disconnect(); this.observer = null;
+    this.windowStateObserver?.disconnect(); this.windowStateObserver = null;
     clearTimeout(this.refreshTimer); this.refreshTimer = null;
     for (const cleanup of this.cleanups || []) { try { cleanup(); } catch (error) { console.warn(error); } }
     this.cleanups = [];
     this.closeMenu();
-    this.clearNativeTools();
+    this.clearNativeTools(false);
+    this.defaultPageTools.clear();
     for (const restore of this.geometryRestores) restore();
     for (const row of this.markedRows) row.classList.remove('sim-layout-row');
     this.markedRows.clear();
     this.orb?.remove(); this.orb = null;
+    this.dragRegion?.remove(); this.dragRegion = null;
+    this.windowActions?.remove(); this.windowActions = null;
     this.styleElement?.remove(); this.styleElement = null;
     this.drag = null; this.suppressClick = false;
     document.body.classList.remove('sim-active', 'sim-keep-topbar', 'sim-window-strip');
-    if (this.topButton) this.topButton.title = '进入沉浸模式 · Alt+Shift+I';
+    this.updateTopButton();
+    if (wasActive) {
+      // SiYuan computes the tab switcher's right margin from the visible drag
+      // region. Re-run its resize layout only AFTER all immersive styles and
+      // temporary geometry are restored. No OS window resize or click occurs.
+      document.getElementById('toolbar')?.getBoundingClientRect();
+      window.dispatchEvent(new window.Event('resize'));
+    }
   }
 
   onunload() {
     this.disposed = true;
+    this.resourceObserver?.disconnect(); this.resourceObserver = null;
+    if (this.resourceEnterFrame != null) window.cancelAnimationFrame(this.resourceEnterFrame);
+    this.resourceEnterFrame = null;
     this.leave();
+    if (this.setting?.dialog?.element?.isConnected) this.setting.dialog.destroy();
+    this.uiStyle?.remove(); this.uiStyle = null;
     this.topButton?.remove(); this.topButton = null;
   }
 };

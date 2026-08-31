@@ -45,7 +45,11 @@ async function fixture(options = {}) {
     addCommand(command) { commands.push(command); }
     addTopBar({ callback, title, icon }) { const el = win.document.createElement('button'); el.className = 'toolbar__item'; el.id = 'plugin_immersive'; el.title = title; el.innerHTML = icon; el.onclick = callback; win.document.querySelector('#toolbar').append(el); return el; }
   }
-  class Setting { items = []; addItem(item) { this.items.push(item); } open() { this.opened = true; } }
+  class Setting {
+    items = []; constructor(options) { this.options = options; }
+    addItem(item) { this.items.push(item); }
+    open() { this.opened = true; const element = win.document.createElement('div'); element.innerHTML = '<div class="b3-dialog__content"></div>'; win.document.body.append(element); this.dialog = { element, destroy: () => element.remove() }; }
+  }
   const host = { Plugin, Setting, getFrontend: () => options.frontend || 'browser-desktop', getBackend: () => options.backend || 'windows', openSetting: () => nativeSettingsOpened++, showMessage: (...args) => messages.push(args) };
   Object.defineProperty(win.navigator, 'platform', { configurable: true, value: options.platform || 'Win32' });
   if (options.nativeWindow) win.require = () => ({ getCurrentWindow: () => options.nativeWindow });
@@ -57,11 +61,133 @@ async function fixture(options = {}) {
 }
 
 test('settings sanitize corrupt data, deduplicate favorites, clamp coordinates', () => {
-  assert.deepEqual(normalizeSettings({ favorites: ['x', 7, 'x', 'y'], side: 'invalid', y: 9 }), { favorites: ['x', 'y'], side: 'right', y: 1, windowsTopBar: false, tabPreviewCount: 5 });
+  assert.deepEqual(normalizeSettings({ favorites: ['x', 7, 'x', 'y'], side: 'invalid', y: 9 }), { favorites: ['x', 'y'], side: 'right', y: 1, windowsTopBar: false, tabPreviewCount: 5, autoEnterOnResourceOpen: false });
   assert.equal(normalizeSettings({ windowsTopBar: 'true' }).windowsTopBar, false);
   assert.equal(normalizeSettings({ windowsTopBar: true }).windowsTopBar, true);
+  assert.equal(normalizeSettings({ autoEnterOnResourceOpen: 'true' }).autoEnterOnResourceOpen, false);
+  assert.equal(normalizeSettings({ autoEnterOnResourceOpen: true }).autoEnterOnResourceOpen, true);
   assert.equal(normalizeSettings({ y: NaN }).y, 0.65);
   assert.equal(normalizeSettings(null).favorites.length, 0);
+});
+
+test('resource auto-entry is opt-in, saves immediately and stops when disabled', async () => {
+  const f = await fixture(); const { plugin: p, win } = f;
+  const wait = () => new Promise(resolve => setTimeout(resolve, 60));
+  const tabs = win.document.querySelector('.layout-tab-bar');
+  const addTab = id => { const tab = win.document.createElement('li'); tab.dataset.id = id; tabs.append(tab); return tab; };
+  assert.deepEqual(Array.from(p.setting.items, item => item.title), ['Windows：保留顶部工具栏', '资源打开时进入沉浸模式', '页签默认展示数量']);
+  addTab('before-enabled'); await wait(); assert.equal(p.active, false);
+  const toggle = p.setting.items.find(item => item.title === '资源打开时进入沉浸模式').createActionElement();
+  assert.equal(toggle.checked, false);
+  toggle.checked = true; toggle.dispatchEvent(new win.Event('change')); await p.pendingSave;
+  assert.equal(f.saves.at(-1).data.autoEnterOnResourceOpen, true);
+  await wait(); assert.equal(p.active, false, 'enabling does not enter for existing tabs');
+  addTab('new-resource'); await wait(); assert.equal(p.active, true);
+  p.openMenu(); assert.equal(p.menu.querySelector('.sim-origin'), null);
+  p.leave(); await wait(); assert.equal(p.active, false, 'manual exit remains normal');
+  toggle.checked = false; toggle.dispatchEvent(new win.Event('change')); await p.pendingSave;
+  addTab('after-disabled'); await wait(); assert.equal(p.active, false);
+  assert.equal(p.resourceObserver, null); assert.equal(f.saves.at(-1).data.autoEnterOnResourceOpen, false);
+  f.dispose();
+});
+
+test('resource auto-entry ignores existing tabs, editor updates, tab moves and transient tabs', async () => {
+  const f = await fixture({ saved: { autoEnterOnResourceOpen: true } }); const { plugin: p, win } = f;
+  const wait = () => new Promise(resolve => setTimeout(resolve, 60));
+  const doc = win.document, tabs = doc.querySelector('.layout-tab-bar');
+  await wait(); assert.equal(p.active, false, 'restored tabs do not trigger entry');
+  tabs.append(tabs.firstElementChild);
+  tabs.firstElementChild.classList.add('item--focus');
+  doc.querySelector('#editor').append(doc.createElement('span'));
+  const transient = doc.createElement('li'); transient.dataset.id = 'transient'; tabs.append(transient); transient.remove();
+  await wait(); assert.equal(p.active, false);
+  const split = doc.createElement('div'); split.innerHTML = '<ul class="layout-tab-bar"><li data-id="attachment">附件</li></ul>';
+  doc.querySelector('.layout__center').append(split); await wait(); assert.equal(p.active, true);
+  p.leave();
+  tabs.append(split.querySelector('li')); split.remove(); await wait(); assert.equal(p.active, false, 'moving a known tab does not reenter');
+  const next = doc.createElement('li'); next.dataset.id = 'another-resource'; tabs.append(next);
+  await wait(); assert.equal(p.active, true, 'the next new resource enters again');
+  f.dispose(); assert.equal(p.resourceObserver, null); assert.equal(p.resourceEnterFrame, null);
+});
+
+test('pending resource entry is cancelled by exit, disabling or unload', async () => {
+  for (const cancel of ['leave', 'disable', 'unload']) {
+    const f = await fixture({ saved: { autoEnterOnResourceOpen: true } }); const { plugin: p, win } = f;
+    let scheduled, cancelled = false;
+    win.requestAnimationFrame = cb => { scheduled = cb; return 123; };
+    win.cancelAnimationFrame = id => { if (id === 123) cancelled = true; };
+    const tab = win.document.createElement('li'); tab.dataset.id = 'pending-resource'; win.document.querySelector('.layout-tab-bar').append(tab);
+    await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(typeof scheduled, 'function');
+    if (cancel === 'leave') p.leave();
+    else if (cancel === 'unload') p.onunload();
+    else { p.settingsData.autoEnterOnResourceOpen = false; p.configureResourceAutoEnter(); }
+    assert.equal(cancelled, true); assert.equal(p.resourceEnterFrame, null);
+    scheduled(); assert.equal(p.active, false);
+    f.dispose();
+  }
+});
+
+test('top entry keeps one native tooltip synchronized with the immersive state', async () => {
+  const f = await fixture({ frontend: 'desktop', saved: { windowsTopBar: true } }); const p = f.plugin;
+  assert.equal(p.topButton.hasAttribute('title'), false);
+  assert.equal(p.topButton.getAttribute('aria-label'), '进入沉浸模式 · Alt+Shift+I');
+  assert.ok(p.topButton.classList.contains('ariaLabel'));
+  p.enter(); assert.equal(p.topButton.getAttribute('aria-label'), '退出沉浸模式 · Alt+Shift+I');
+  assert.equal(p.topButton.hasAttribute('title'), false);
+  p.leave(); assert.equal(p.topButton.getAttribute('aria-label'), '进入沉浸模式 · Alt+Shift+I');
+  f.dispose(); assert.equal(f.win.document.querySelector('#sim-ui-style'), null);
+});
+
+test('compact settings apply in ordinary and immersive modes and destroy on unload', async () => {
+  const f = await fixture(); const p = f.plugin;
+  assert.equal(p.setting.options.height, 'fit-content'); assert.equal(p.setting.options.confirmCallback, undefined);
+  p.setting.open('沉浸模式设置'); assert.ok(p.setting.dialog.element.classList.contains('sim-settings-dialog'));
+  assert.equal(p.setting.dialog.element.querySelector('.sim-settings-version').textContent, `版本 ${require('../plugin.json').version}`);
+  assert.ok(f.win.document.querySelector('#sim-ui-style')); p.setting.dialog.destroy();
+  p.enter(); p.openMenu(); p.menu.querySelector('[data-action-key="builtin:plugin-settings"]').click();
+  const dialog = p.setting.dialog.element; assert.ok(dialog.classList.contains('sim-settings-dialog'));
+  p.leave(); assert.ok(dialog.isConnected); assert.ok(f.win.document.querySelector('#sim-ui-style'));
+  f.dispose(); assert.equal(dialog.isConnected, false);
+});
+
+test('kept topbar aligns tabs to the current page edge, not the original toolbar start', async () => {
+  const f = await fixture({ frontend: 'desktop', saved: { windowsTopBar: true } }); const p = f.plugin, doc = f.win.document;
+  const list = doc.querySelector('.layout-tab-bar'), row = list.parentElement, first = list.firstElementChild;
+  list.getBoundingClientRect = () => ({ left: 276, width: 400 });
+  list.scrollLeft = 20;
+  first.getBoundingClientRect = () => ({ left: 260, width: 100 });
+  const page = doc.querySelector('.layout-tab-container');
+  page.getBoundingClientRect = () => ({ left: 210, right: 800, width: 590 });
+  p.enter();
+  assert.equal(row.style.getPropertyValue('--sim-tabs-left'), '210px');
+  assert.equal(doc.querySelector('.layout-tab-bar'), list);
+  doc.getElementById('drag').getBoundingClientRect = () => ({ left: 320, right: 650, width: 330 });
+  p.syncMergedTabs(); assert.equal(row.style.getPropertyValue('--sim-tabs-left'), '210px');
+  const right = parseFloat(row.style.getPropertyValue('--sim-tabs-left')) + parseFloat(row.style.getPropertyValue('--sim-tabs-width'));
+  assert.ok(right <= 602, 'window controls and drag space remain clear');
+  p.leave(); assert.equal(row.style.getPropertyValue('--sim-tabs-left'), '');
+  page.getBoundingClientRect = () => ({ left: 280, right: 800, width: 520 });
+  p.enter(); assert.equal(row.style.getPropertyValue('--sim-tabs-left'), '280px');
+  f.dispose();
+});
+
+test('toolbar tools that conflict with page-aligned tabs remain reachable and restore without moving nodes', async () => {
+  const f = await fixture({ frontend: 'desktop', saved: { windowsTopBar: true } }); const p = f.plugin, doc = f.win.document;
+  const search = doc.getElementById('barSearch'), more = doc.getElementById('barMore'), toolbar = search.parentElement;
+  for (const element of [search, more]) element.getBoundingClientRect = () => ({ width: 60 });
+  const page = doc.querySelector('.layout-tab-container'); let left = 90;
+  page.getBoundingClientRect = () => ({ left, right: 800, width: 800 - left });
+  p.enter(); p.openMenu();
+  assert.equal(search.classList.contains('sim-topbar-overflow'), false);
+  assert.equal(more.classList.contains('sim-topbar-overflow'), true);
+  assert.ok(p.menu.querySelector('[data-action-key="top:barMore"]'));
+  assert.equal(p.menu.querySelectorAll('[data-action-key="top:barSearch"]').length, 0);
+  for (let i = 0; i < 5; i++) p.syncMergedTabs();
+  assert.equal(p.topbarOverflow.size, 1);
+  left = 180; p.syncMergedTabs(); assert.equal(more.classList.contains('sim-topbar-overflow'), false);
+  left = 90; p.syncMergedTabs(); assert.equal(more.classList.contains('sim-topbar-overflow'), true);
+  p.leave(); assert.equal(p.topbarOverflow.size, 0); assert.equal(more.classList.contains('sim-topbar-overflow'), false);
+  assert.equal(more.parentElement, toolbar); f.dispose();
 });
 
 test('orb stays in ordinary small viewport after resize', () => {
@@ -121,6 +247,44 @@ test('pointer drag works outside orb, snaps left, suppresses release click only'
   await p.pendingSave; assert.equal(f.saves.at(-1).data.side, 'left'); f.dispose();
 });
 
+test('mouse hover opens without taking editor focus; touch and dragging do not open the card', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document; p.enter();
+  const editor = doc.getElementById('editor'); editor.focus();
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'touch' }));
+  assert.equal(p.menu, undefined);
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  assert.ok(p.menu); assert.equal(doc.activeElement, editor);
+  const menu = p.menu; p.orb.click(); assert.equal(p.menu, menu, 'click after hover keeps the card open');
+  doc.dispatchEvent(new f.win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(p.menu, null);
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerdown', { button: 0, pointerId: 3 }));
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse', buttons: 1 }));
+  assert.equal(p.menu, null);
+  f.win.dispatchEvent(new f.win.PointerEvent('pointerup', { pointerId: 3 }));
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  p.orb.dispatchEvent(new f.win.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  assert.ok(p.menu, 'card stays accessible when moving from orb to card');
+  doc.getElementById('editor').dispatchEvent(new f.win.PointerEvent('pointerdown', { bubbles: true }));
+  assert.equal(p.menu, null); f.dispose();
+});
+
+test('desktop gets an invisible native drag inset; Docker does not', async () => {
+  const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const doc = f.win.document;
+  p.enter();
+  assert.equal(doc.querySelectorAll('.sim-window-drag').length, 1);
+  assert.equal(f.win.getComputedStyle(p.dragRegion).getPropertyValue('-webkit-app-region'), 'drag');
+  assert.equal(f.win.getComputedStyle(p.dragRegion).height, '8px');
+  assert.equal(f.win.getComputedStyle(doc.getElementById('toolbar')).display, 'none');
+  p.leave(); assert.equal(doc.querySelector('.sim-window-drag, .sim-minimize'), null); f.dispose();
+});
+
+test('browser and Docker never receive a desktop drag region', async () => {
+  for (const options of [{ frontend: 'browser-desktop' }, { frontend: 'desktop', backend: 'docker' }]) {
+    const f = await fixture(options); f.plugin.enter();
+    assert.equal(f.win.document.querySelector('.sim-minimize, .sim-window-drag'), null); f.dispose();
+  }
+});
+
 test('removed source disappears while favorite preference remains', async () => {
   const f = await fixture({ saved: { favorites: ['dock:things'] } }); const p = f.plugin;
   p.enter(); p.openMenu(); f.win.document.querySelector('[data-type="things"]').remove(); p.renderMenu();
@@ -148,6 +312,333 @@ test('tabs call original tab, page/toolbar reveal classes clear on exit', async 
   p.revealToolbar(); assert.equal(f.win.document.querySelector('.sim-page-tools'), null);
   assert.ok(f.win.document.querySelector('.sim-native-tools'));
   p.leave(); assert.equal(f.win.document.querySelector('.sim-native-tools'), null); f.dispose();
+});
+
+test('immersive mode keeps the active page tools visible by default', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const pageTools = doc.querySelector('.protyle-breadcrumb');
+  p.enter();
+  assert.ok(pageTools.classList.contains('sim-page-tools'));
+  assert.notEqual(f.win.getComputedStyle(pageTools).position, 'absolute', 'default page tools stay in document flow');
+  p.openMenu();
+  assert.ok(pageTools.classList.contains('sim-page-tools'), 'opening the card does not hide default page tools');
+  doc.getElementById('editor').dispatchEvent(new f.win.PointerEvent('pointerdown', { bubbles: true }));
+  assert.ok(pageTools.classList.contains('sim-page-tools'), 'outside clicks only dismiss temporary reveals');
+  p.revealToolbar();
+  assert.equal(pageTools.classList.contains('sim-page-tools'), false);
+  p.clearNativeTools(false);
+  p.showDefaultPageTools();
+  assert.ok(pageTools.classList.contains('sim-page-tools'));
+  p.leave(); assert.equal(pageTools.classList.contains('sim-page-tools'), false);
+  f.dispose();
+});
+
+test('list ordering follows the native toolbar DOM, not the fallback icon table', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const toolbar = doc.getElementById('toolbar');
+  const main = doc.createElement('button'); main.id = 'barWorkspace'; main.className = 'toolbar__item';
+  const sync = doc.createElement('button'); sync.id = 'barSync'; sync.className = 'toolbar__item';
+  toolbar.prepend(main, sync);
+  p.enter(); p.openMenu();
+  assert.deepEqual([...p.menu.querySelectorAll('.sim-action-group')].map(group => group.dataset.actionGroup), ['left', 'top']);
+  const topGroup = p.menu.querySelector('[data-action-group="top"]');
+  assert.equal(topGroup.querySelector('.sim-action-grid'), null);
+  assert.deepEqual([...topGroup.querySelectorAll('.sim-action')].map(action => action.dataset.actionKey), ['top:barWorkspace', 'top:barSync', 'top:barSearch', 'top:barMore', 'builtin:toolbar']);
+  toolbar.insertBefore(sync, main); p.renderMenu();
+  assert.equal(p.menu.querySelector('[data-action-group="top"] .sim-action').dataset.actionKey, 'top:barSync');
+  f.dispose();
+});
+
+test('native visual ordering survives hiding chrome on all four rails', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const bottom = doc.createElement('div'); bottom.id = 'dockBottom'; doc.body.append(bottom);
+  for (const [rail, axis] of [['dockLeft', 'top'], ['dockRight', 'top'], ['dockBottom', 'left']]) {
+    const target = doc.getElementById(rail); target.replaceChildren();
+    for (const [name, position] of [['last', 100], ['first', 20]]) {
+      const node = doc.createElement('button'); node.className = 'dock__item'; node.dataset.type = `${rail}-${name}`; node.title = name;
+      node.getBoundingClientRect = () => doc.body.classList.contains('sim-active') ? { width: 0, height: 0, left: 0, top: 0 } : { width: 24, height: 24, left: 0, top: 0, [axis]: position };
+      target.append(node);
+    }
+  }
+  for (const [id, left] of [['barSearch', 100], ['barMore', 20]]) doc.getElementById(id).getBoundingClientRect = () => doc.body.classList.contains('sim-active') ? { width: 0, height: 0 } : { width: 24, height: 24, left, top: 0 };
+  p.enter(); p.openMenu();
+  for (const [group, key] of [['left', 'dock:dockLeft-first'], ['right', 'dock:dockRight-first'], ['bottom', 'dock:dockBottom-first'], ['top', 'top:barMore']]) {
+    assert.equal(p.menu.querySelector(`[data-action-group="${group}"] .sim-action`).dataset.actionKey, key);
+  }
+  f.dispose();
+});
+
+function nativeMenuFixture(f) {
+  const doc = f.win.document;
+  const menu = doc.createElement('div'); menu.id = 'commonMenu'; menu.className = 'b3-menu fn__none';
+  const items = doc.createElement('div'); items.className = 'b3-menu__items'; menu.append(items); doc.body.append(menu);
+  const choice = doc.createElement('button'); choice.className = 'b3-menu__item'; choice.textContent = '原生选项'; items.append(choice);
+  let opens = 0, executions = 0, closes = 0;
+  const owner = { element: menu, remove() { closes++; menu.classList.add('fn__none'); } };
+  f.win.siyuan = { menus: { menu: owner } };
+  const open = () => { opens++; menu.classList.remove('fn__none'); };
+  choice.onclick = () => { executions++; owner.remove(); };
+  return { menu, choice, open, owner, counts: () => ({ opens, executions, closes }) };
+}
+
+test('plugin settings is a menu item and browser footer has only exit without hiding page tools', async () => {
+  for (const options of [{}, { frontend: 'browser-desktop', backend: 'docker' }]) {
+    const f = await fixture(options); const p = f.plugin;
+    p.enter(); p.openMenu();
+    assert.equal(p.menu.querySelector('[data-action-group="page"], [data-action-key="builtin:page-tools"], [data-action-key="builtin:settings"]'), null);
+    assert.ok(f.win.document.querySelector('.protyle-breadcrumb.sim-page-tools'));
+    assert.equal(p.menu.querySelector('.sim-footer'), p.windowActions);
+    assert.deepEqual([...p.windowActions.querySelectorAll('button')].map(el => el.getAttribute('aria-label')), ['退出沉浸']);
+    const settings = p.menu.querySelector('[data-action-key="builtin:plugin-settings"]');
+    assert.equal(settings.textContent, '插件设置');
+    assert.equal(settings.querySelector('use').getAttribute('href'), '#iconSettings');
+    assert.ok(settings.closest('.sim-menu-other-scroll'));
+    settings.click();
+    assert.equal(p.setting.opened, true); assert.equal(p.menu, null);
+    f.dispose();
+  }
+});
+
+test('menu strips modifier shortcuts without changing original labels or shortcut commands', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  doc.getElementById('barMore').setAttribute('aria-label', '主菜单 Alt+\\');
+  doc.getElementById('barSearch').setAttribute('aria-label', '搜索（Ctrl+Shift+F）');
+  doc.querySelector('[data-type="things"]').setAttribute('data-title', 'Things ⌥⇧T');
+  p.enter(); p.openMenu();
+  for (const [key, label] of [['top:barMore', '主菜单'], ['top:barSearch', '搜索'], ['dock:things', 'Things']]) {
+    const item = p.menu.querySelector(`[data-action-key="${key}"]`);
+    assert.equal(item.getAttribute('aria-label'), label); assert.equal(item.title, label);
+  }
+  assert.equal(p.menu.textContent.includes('Alt+'), false);
+  assert.equal(doc.getElementById('barMore').getAttribute('aria-label'), '主菜单 Alt+\\');
+  assert.equal(f.commands[0].hotkey, '⌥⇧I'); f.dispose();
+});
+
+test('sync keeps a fixed label and hover displays fresh host information without synchronizing or rerendering', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const sync = doc.createElement('button'); sync.id = 'barSync'; sync.className = 'toolbar__item';
+  sync.setAttribute('aria-label', '上传 12 KB / 下载 30 KB Alt+S'); doc.getElementById('toolbar').append(sync);
+  let queries = 0, clicks = 0;
+  sync.onclick = () => clicks++;
+  sync.addEventListener('mouseenter', () => { queries++; setTimeout(() => sync.setAttribute('aria-label', '最近同步：22:00<br>上传 20 KB / 下载 40 KB'), 10); });
+  p.enter(); p.openMenu();
+  const trigger = p.menu.querySelector('[data-action-key="top:barSync"]');
+  assert.equal(trigger.getAttribute('aria-label'), '同步');
+  trigger.parentElement.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  assert.equal(p.syncTip.textContent, '上传 12 KB / 下载 30 KB');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(queries, 1); assert.equal(clicks, 0);
+  assert.equal(p.menu.querySelector('[data-action-key="top:barSync"]'), trigger);
+  assert.equal(p.syncTip.textContent, '最近同步：22:00\n上传 20 KB / 下载 40 KB');
+  trigger.parentElement.dispatchEvent(new f.win.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  assert.equal(p.syncTip, null); assert.equal(trigger.hasAttribute('aria-describedby'), false);
+  trigger.click(); assert.equal(clicks, 1); assert.equal(p.menu, null);
+  p.openMenu(); p.menu.querySelector('[data-action-key="top:barSync"]').focus();
+  assert.ok(p.syncTip); p.leave();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(doc.querySelector('.sim-sync-tip'), null); f.dispose();
+});
+
+test('desktop footer controls follow live window state and proxies native clicks without moving controls', async () => {
+  for (const backend of ['windows', 'linux', 'darwin']) {
+    const f = await fixture({ frontend: 'desktop', backend }); const p = f.plugin; const doc = f.win.document;
+    const controls = doc.getElementById('windowControls'); const nodes = [...controls.children];
+    const calls = [];
+    for (const source of nodes) source.onclick = () => {
+      calls.push(source.id);
+      if (source.id === 'maxWindow') doc.body.classList.add('body--maximize');
+      if (source.id === 'restoreWindow') doc.body.classList.remove('body--maximize');
+    };
+    p.enter(); p.openMenu();
+    assert.equal(p.windowActions.querySelectorAll('button').length, 4);
+    doc.body.classList.add('body--maximize');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(p.windowActions.querySelector('[data-control-key="maximize"]').title, '还原');
+    doc.body.classList.remove('body--maximize');
+    for (const key of ['minimize', 'maximize', 'maximize', 'close']) {
+      p.openMenu(); p.windowActions.querySelector(`[data-control-key="${key}"]`).click();
+    }
+    assert.deepEqual(calls, ['minWindow', 'maxWindow', 'restoreWindow', 'closeWindow']);
+    for (let i = 0; i < 20; i++) { p.leave(); p.enter(); p.openMenu(); }
+    p.leave(); assert.equal(p.windowStateObserver, null);
+    assert.deepEqual([...controls.children], nodes);
+    assert.equal(controls.parentElement.id, 'toolbar');
+    assert.equal(doc.querySelector('.sim-footer'), null);
+    f.dispose();
+  }
+});
+
+test('hover opens real submenu once and keeps it usable across the gap and following click', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const native = nativeMenuFixture(f); doc.getElementById('barMore').onclick = native.open;
+  p.enter(); p.openMenu(false);
+  const trigger = p.menu.querySelector('[data-action-key="top:barMore"]'); const row = trigger.parentElement;
+  row.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(p.submenu, native.menu); assert.equal(native.counts().opens, 1);
+  trigger.click(); assert.equal(p.submenu, native.menu); assert.equal(native.counts().opens, 1);
+  row.dispatchEvent(new f.win.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  native.menu.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  assert.equal(p.submenu, native.menu);
+  native.choice.click(); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(native.counts().executions, 1); assert.equal(p.submenu, null);
+  f.dispose();
+});
+
+test('window controls belong to the card footer and never create a corner overlay', async () => {
+  const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const win = f.win;
+  p.enter();
+  assert.equal(win.document.querySelector('.sim-window-actions'), null);
+  win.dispatchEvent(new win.PointerEvent('pointermove', { pointerType: 'mouse', clientX: 970, clientY: 14 }));
+  assert.equal(win.document.querySelector('.sim-window-actions'), null);
+  p.openMenu(); const controls = p.windowActions;
+  assert.equal(controls.parentElement, p.menu); assert.equal(p.menu.lastElementChild, controls);
+  assert.equal(controls.querySelectorAll('button').length, 4);
+  assert.notEqual(win.getComputedStyle(controls).position, 'fixed');
+  p.closeMenu(); assert.equal(p.windowActions, null); assert.equal(controls.isConnected, false);
+  p.openMenu(); p.leave(); assert.equal(win.document.querySelector('.sim-window-actions'), null);
+  f.dispose();
+});
+
+test('exit refreshes native layout only after original chrome and tab geometry are restored', async () => {
+  const f = await fixture({ frontend: 'desktop', saved: { windowsTopBar: true } }); const p = f.plugin; const doc = f.win.document;
+  const row = doc.querySelector('.layout-tab-bar').parentElement;
+  const controls = doc.getElementById('windowControls'); const switcher = row.querySelector('[data-type="more"]');
+  let refreshes = 0;
+  f.win.addEventListener('resize', () => {
+    refreshes++;
+    assert.equal(p.active, false);
+    assert.equal(doc.querySelector('#sim-style, .sim-merged-tabs, .sim-tab-switch-hidden'), null);
+    assert.equal(doc.body.classList.contains('sim-active'), false);
+    assert.equal(controls.parentElement.id, 'toolbar');
+    assert.ok(row.contains(switcher));
+  });
+  p.enter(); p.leave(); assert.equal(refreshes, 1);
+  p.leave(); assert.equal(refreshes, 1);
+  p.enter(); p.onunload(); assert.equal(refreshes, 2);
+  f.dispose();
+});
+
+test('root and nested menu shift above the bottom edge and restore native positioning on close', async () => {
+  const f = await fixture({ height: 400 }); const p = f.plugin; const doc = f.win.document;
+  const native = nativeMenuFixture(f); doc.getElementById('barMore').onclick = native.open;
+  const parent = doc.createElement('div'); parent.className = 'b3-menu__item'; native.menu.querySelector('.b3-menu__items').append(parent);
+  const child = doc.createElement('div'); child.className = 'b3-menu__submenu'; child.style.top = '380px';
+  child.style.setProperty('--sim-child-top', '25px', 'important'); parent.append(child);
+  let parentTop = 360;
+  parent.getBoundingClientRect = () => ({ top: parentTop });
+  child.getBoundingClientRect = () => ({ width: 230, height: 180, left: 50, top: parentTop });
+  p.enter(); p.openMenu();
+  p.menu.getBoundingClientRect = () => ({ left: 640, right: 920, top: 8, width: 280, height: 384 });
+  native.menu.getBoundingClientRect = () => ({ width: 230, height: 300 });
+  const trigger = p.menu.querySelector('[data-action-key="top:barMore"]');
+  trigger.getBoundingClientRect = () => ({ top: 370 }); trigger.click();
+  assert.equal(native.menu.style.getPropertyValue('--sim-submenu-top'), '92px');
+  assert.equal(child.style.getPropertyValue('--sim-child-top'), '212px');
+  parentTop = 100; native.menu.dispatchEvent(new f.win.Event('scroll'));
+  assert.equal(child.style.getPropertyValue('--sim-child-top'), '100px');
+  p.closeSubmenu();
+  assert.equal(child.style.top, '380px'); assert.equal(child.style.getPropertyValue('--sim-child-top'), '25px');
+  assert.equal(child.style.getPropertyPriority('--sim-child-top'), 'important');
+  assert.equal(child.classList.contains('sim-child-positioned'), false);
+  assert.equal(p.childMenuPositions.size, 0); assert.equal(p.nativeMenuScrollHandler, null);
+  f.dispose();
+});
+
+test('hover excludes dock/unknown commands, touch and held buttons; cancelled hover never fires', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document; let calls = 0;
+  const command = doc.createElement('button'); command.id = 'plugin_command'; command.dataset.menu = 'true'; command.title = '插件命令';
+  command.onclick = () => calls++; doc.getElementById('toolbar').append(command);
+  doc.querySelector('[data-type="file"]').onclick = () => calls++;
+  doc.getElementById('barMore').onclick = () => calls++;
+  p.enter(); p.openMenu();
+  const hover = (key, options = {}) => p.menu.querySelector(`[data-action-key="${key}"]`).parentElement.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse', ...options }));
+  hover('dock:file'); hover('top:plugin_command'); hover('top:barMore', { pointerType: 'touch' }); hover('top:barMore', { buttons: 1 });
+  await new Promise(resolve => setTimeout(resolve, 220)); assert.equal(calls, 0);
+  hover('top:barMore');
+  p.menu.querySelector('[data-action-key="top:barMore"]').parentElement.dispatchEvent(new f.win.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 220)); assert.equal(calls, 0);
+  hover('top:barMore'); p.leave();
+  await new Promise(resolve => setTimeout(resolve, 220)); assert.equal(calls, 0);
+  assert.equal(p.submenuHoverTimer, null); f.dispose();
+});
+
+test('dock highlights track native active and focused selection changes', async () => {
+  const f = await fixture(); const p = f.plugin; const source = f.win.document.querySelector('[data-type="file"]');
+  source.classList.add('dock__item--active'); p.enter(); p.openMenu();
+  const action = () => p.menu.querySelector('[data-action-key="dock:file"]');
+  assert.equal(action().getAttribute('aria-pressed'), 'true'); assert.ok(action().parentElement.classList.contains('sim-row--active'));
+  source.classList.replace('dock__item--active', 'dock__item--activefocus');
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert.ok(action().parentElement.classList.contains('sim-row--activefocus'));
+  source.classList.remove('dock__item--activefocus');
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert.equal(action().getAttribute('aria-pressed'), 'false');
+  assert.equal(action().parentElement.classList.contains('sim-row--activefocus'), false);
+  f.dispose();
+});
+
+test('one primary click opens the actual native submenu outside the card and keeps handlers intact', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const native = nativeMenuFixture(f); doc.getElementById('barMore').onclick = native.open;
+  p.enter(); p.openMenu();
+  p.menu.getBoundingClientRect = () => ({ left: 640, right: 950, top: 60, width: 310, height: 560 });
+  native.menu.getBoundingClientRect = () => ({ width: 220, height: 180 });
+  const trigger = p.menu.querySelector('[data-action-key="top:barMore"]');
+  trigger.getBoundingClientRect = () => ({ top: 150, bottom: 180, left: 648, right: 920, width: 272, height: 30 });
+  trigger.click();
+  assert.equal(p.submenu, native.menu); assert.equal(native.menu.parentElement, doc.body);
+  assert.equal(native.counts().opens, 1); assert.equal(native.counts().executions, 0);
+  assert.equal(native.menu.style.getPropertyValue('--sim-submenu-left'), '412px');
+  assert.equal(native.menu.style.getPropertyValue('--sim-submenu-top'), '150px');
+  assert.equal(doc.querySelector('.sim-submenu-action'), null, 'no intermediary open button');
+  native.choice.dispatchEvent(new f.win.PointerEvent('pointerdown', { bubbles: true }));
+  assert.ok(p.menu); assert.equal(p.submenu, native.menu);
+  native.choice.click(); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(native.counts().executions, 1); assert.equal(p.submenu, null); assert.ok(p.menu);
+  assert.equal(native.menu.classList.contains('sim-native-submenu'), false);
+  trigger.click();
+  doc.dispatchEvent(new f.win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(p.submenu, null); assert.ok(p.menu); assert.equal(doc.activeElement, trigger);
+  assert.equal(native.menu.style.getPropertyValue('--sim-submenu-left'), '');
+  trigger.click(); p.leave();
+  assert.equal(native.menu.parentElement, doc.body); assert.equal(p.nativeMenuObserver, null);
+  assert.equal(native.menu.classList.contains('fn__none'), true);
+  f.dispose();
+});
+
+test('async native submenu is adopted without a second click and late results after exit stay untouched', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const native = nativeMenuFixture(f);
+  doc.getElementById('barMore').onclick = () => setTimeout(native.open, 20);
+  p.enter(); p.openMenu(); p.menu.querySelector('[data-action-key="top:barMore"]').click();
+  assert.equal(p.submenu, null);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(p.submenu, native.menu); assert.equal(native.counts().opens, 1);
+  p.closeMenu(); assert.equal(p.nativeMenuObserver, null);
+  p.openMenu(); p.menu.querySelector('[data-action-key="top:barMore"]').click(); p.leave();
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(native.menu.classList.contains('sim-native-submenu'), false);
+  assert.equal(p.submenu, null); assert.equal(p.submenuTimer, null);
+  f.dispose();
+});
+
+test('document tree and agent dock reuse their original click logic even with data-menu attributes', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const agent = doc.createElement('button'); agent.className = 'dock__item'; agent.dataset.type = 'agentChat'; doc.getElementById('dockRight').append(agent);
+  const file = doc.querySelector('[data-type="file"]');
+  let opened = [];
+  for (const source of [file, agent]) {
+    source.dataset.menu = 'true'; source.setAttribute('aria-haspopup', 'menu');
+    source.onclick = () => opened.push(source.dataset.type);
+  }
+  p.enter();
+  for (const source of [file, agent]) {
+    const parent = source.parentNode; p.openMenu();
+    p.menu.querySelector(`[data-action-key="dock:${source.dataset.type}"]`).click();
+    assert.equal(p.menu, null); assert.equal(p.submenu, null); assert.equal(source.parentNode, parent);
+  }
+  assert.deepEqual(opened, ['file', 'agentChat']); f.dispose();
 });
 
 test('unload restores temporary geometry methods exactly', async () => {
@@ -212,16 +703,50 @@ test('registered plugin buttons remain reachable after another collector moves t
   f.plugin.enter(); f.plugin.openMenu();
   const buttons = f.plugin.menu.querySelectorAll('.sim-action[data-action-key="top:plugin_relocated"]');
   assert.equal(buttons.length, 1); assert.equal(buttons[0].getAttribute('aria-label'), '测试插件');
-  buttons[0].click(); assert.equal(calls, 1); assert.equal(moved.parentNode, container);
+  buttons[0].click(); assert.equal(f.plugin.submenu, null);
+  assert.equal(calls, 1); assert.equal(moved.parentNode, container);
   moved.remove();
   assert.equal(f.plugin.actions().some(x => x.key === 'top:plugin_relocated'), false);
   f.dispose();
 });
 
-test('top entry uses Apple-style zoom affordance', async () => {
-  const f = await fixture();
-  assert.ok(f.plugin.topButton.classList.contains('sim-apple-zoom'));
-  assert.match(f.plugin.topButton.innerHTML, /34c759|circle/);
+test('entry and exit use supplied vectors while footer controls use SiYuan icon symbols', async () => {
+  const f = await fixture({ frontend: 'desktop' }); const p = f.plugin;
+  const enter = p.topButton.querySelectorAll('path')[1].getAttribute('d');
+  assert.ok(enter.startsWith('M775.314286 204.8'));
+  assert.equal(p.topButton.querySelector('svg').getAttribute('viewBox'), '0 0 1024 1024');
+  p.enter(); p.openMenu();
+  const exit = p.windowActions.querySelector('[data-control-key="exit"] path:last-child').getAttribute('d');
+  assert.ok(exit.startsWith('M811.885714 438.857143'));
+  assert.equal(p.topButton.querySelector('path:last-child').getAttribute('d'), exit);
+  for (const [key, icon] of [['minimize','iconMin'],['maximize','iconMax'],['close','iconClose']]) {
+    assert.equal(p.windowActions.querySelector(`[data-control-key="${key}"] use`).getAttribute('href'), `#${icon}`);
+  }
+  f.win.document.body.classList.add('body--maximize');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(p.windowActions.querySelector('[data-control-key="maximize"] use').getAttribute('href'), '#iconRestore');
+  p.leave(); assert.equal(p.topButton.querySelector('path:last-child').getAttribute('d'), enter);
+  f.dispose();
+});
+
+test('moving to direct actions, another menu, tabs or settings dismisses the previous child without executing commands', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const native = nativeMenuFixture(f); doc.getElementById('barMore').onclick = native.open;
+  const next = doc.createElement('button'); next.id = 'barPlugins'; next.className = 'toolbar__item'; next.onclick = native.open; doc.getElementById('toolbar').append(next);
+  let calls = 0; doc.getElementById('barSearch').onclick = () => calls++; doc.querySelector('[data-type="file"]').onclick = () => calls++;
+  p.enter(); p.openMenu();
+  for (const selector of ['[data-action-key="top:barSearch"]', '[data-action-key="dock:file"]', '.sim-menu-tabs', '.sim-plugin-settings']) {
+    p.menu.querySelector('[data-action-key="top:barMore"]').click(); assert.equal(p.submenu, native.menu);
+    const item = p.menu.querySelector(selector);
+    (item.closest('.sim-row') || item).dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+    assert.equal(p.submenu, null); assert.equal(native.menu.classList.contains('fn__none'), true); assert.equal(calls, 0);
+  }
+  p.menu.querySelector('[data-action-key="top:barMore"]').click();
+  // pointerenter does not bubble: dispatch on the row as a real pointer crossing does.
+  p.menu.querySelector('[data-action-key="top:barPlugins"]').parentElement.dispatchEvent(new f.win.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  assert.equal(p.submenu, null);
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(p.submenu, native.menu); assert.equal(p.submenuAction.key, 'top:barPlugins');
   f.dispose();
 });
 
@@ -262,7 +787,7 @@ test('relocated Dock uses host ownership or plugin position, unknown location is
 
 test('card displays location groups and moved actions follow their current group without duplicates', async () => {
   const f = await fixture(); const p = f.plugin; p.enter(); p.openMenu();
-  assert.deepEqual([...p.menu.querySelectorAll('[data-action-group]')].map(el => el.dataset.actionGroup), ['left', 'top', 'page']);
+  assert.deepEqual([...p.menu.querySelectorAll('[data-action-group]')].map(el => el.dataset.actionGroup), ['left', 'top']);
   assert.equal(p.menu.querySelector('[data-action-group="bottom"]'), null);
   f.win.document.getElementById('dockRight').append(f.win.document.querySelector('[data-type="things"]'));
   p.renderMenu();
@@ -342,7 +867,7 @@ test('kept toolbar preserves native tab nodes, host offsets and click/contextmen
   p.settingsData.windowsTopBar = true; p.applyTopBarSetting();
   assert.equal(doc.body.classList.contains('sim-keep-topbar'), true);
   assert.equal(row.classList.contains('sim-merged-tabs'), true);
-  assert.equal(style(row).position, 'fixed'); assert.equal(style(row).top, '0px');
+  assert.equal(style(row).position, 'fixed'); assert.equal(style(row).top, 'calc(8px / 2)');
   assert.equal(row.parentElement.getAttribute('data-type'), 'wnd');
   assert.equal(row.style.visibility, 'hidden'); assert.equal(row.style.paddingLeft, '95px');
   assert.equal(style(tab).getPropertyValue('-webkit-app-region'), 'no-drag');
@@ -355,7 +880,7 @@ test('kept toolbar preserves native tab nodes, host offsets and click/contextmen
   assert.equal(style(row).paddingLeft, '95px'); f.dispose();
 });
 
-test('visible full toolbar removes top actions; minimal strip keeps those actions in the card', async () => {
+test('visible full toolbar removes top actions; full immersion keeps those actions in the card', async () => {
   const f = await fixture({ frontend: 'desktop', saved: { favorites: ['top:barSearch', 'dock:file', 'builtin:toolbar'] } });
   const p = f.plugin; p.enter(); p.openMenu();
   assert.ok(p.menu.querySelector('[data-action-group="top"] [data-action-key="top:barSearch"]'));
@@ -363,6 +888,8 @@ test('visible full toolbar removes top actions; minimal strip keeps those action
   assert.equal(p.actions().some(action => action.group === 'top'), false);
   assert.equal(p.menu.querySelector('[data-action-key="top:barSearch"]'), null);
   assert.equal(p.menu.querySelector('[data-action-group="top"]'), null);
+  assert.equal(p.menu.querySelector('.sim-menu-tabs, .sim-window-actions'), null);
+  assert.equal(p.windowActions, null);
   assert.ok(p.menu.querySelector('[data-action-group="left"] [data-action-key="dock:file"]'));
   assert.deepEqual(Array.from(p.settingsData.favorites), ['top:barSearch', 'dock:file', 'builtin:toolbar']);
   p.settingsData.windowsTopBar = false; p.applyTopBarSetting();
@@ -377,7 +904,7 @@ test('nonempty groups follow left-top-right-bottom and a removed group disappear
   const bottom = doc.createElement('div'); bottom.id = 'dockBottom'; bottom.innerHTML = '<button class="dock__item" data-type="graph" title="关系图"></button>'; doc.body.append(bottom);
   p.enter(); p.openMenu();
   const groups = () => [...p.menu.querySelectorAll('[data-action-group]')].map(el => el.dataset.actionGroup);
-  assert.deepEqual(groups(), ['left', 'top', 'right', 'bottom', 'page']);
+  assert.deepEqual(groups(), ['left', 'top', 'right', 'bottom']);
   bottom.remove(); p.renderMenu(); assert.equal(groups().includes('bottom'), false);
   f.dispose();
 });
@@ -407,9 +934,11 @@ test('split panes share one toolbar row without reparenting; resize/hide/remove 
   const right1 = parseFloat(row1.style.getPropertyValue('--sim-tabs-left')) + parseFloat(row1.style.getPropertyValue('--sim-tabs-width'));
   assert.ok(parseFloat(row2.style.getPropertyValue('--sim-tabs-left')) >= right1);
   assert.equal(row1.parentElement, first); assert.equal(row2.parentElement, second);
-  const before = parseFloat(row1.style.getPropertyValue('--sim-tabs-width'));
+  const before = parseFloat(row2.style.getPropertyValue('--sim-tabs-width'));
   doc.getElementById('drag').getBoundingClientRect = () => ({ left: 250, right: 950, top: 0, bottom: 32, width: 700, height: 32 });
-  p.syncMergedTabs(); assert.ok(parseFloat(row1.style.getPropertyValue('--sim-tabs-width')) > before);
+  p.syncMergedTabs(); assert.ok(parseFloat(row2.style.getPropertyValue('--sim-tabs-width')) > before);
+  assert.equal(row1.style.getPropertyValue('--sim-tabs-left'), '100px');
+  assert.equal(row2.style.getPropertyValue('--sim-tabs-left'), '500px');
   second.classList.add('fn__none'); p.syncMergedTabs(); assert.equal(p.mergedRows.size, 1);
   assert.equal(row2.style.getPropertyValue('--sim-tabs-left'), '7px');
   assert.equal(row2.style.getPropertyPriority('--sim-tabs-left'), 'important');
@@ -478,24 +1007,25 @@ test('removed or replaced switcher is restored and observer tracks tab widths fo
   f.dispose();
 });
 
-test('resizing an open card keeps its page actions and footer available', async () => {
+test('resizing an open card keeps its page actions and footer exit available', async () => {
   const f = await fixture(); f.plugin.enter(); f.plugin.openMenu();
   f.sandbox.innerWidth = 420; f.sandbox.innerHeight = 280;
   f.win.dispatchEvent(new f.win.Event('resize'));
   assert.ok([...f.plugin.menu.querySelectorAll('button')].some(x => x.textContent.includes('文档二')));
-  assert.equal(f.plugin.menu.querySelector('.sim-footer button:last-child').textContent, '退出沉浸');
+  assert.equal(f.plugin.windowActions.querySelector('[data-control-key="exit"]').getAttribute('aria-label'), '退出沉浸');
   f.dispose();
 });
 
-test('card pins tabs independently from grouped actions, with footer exit and active orb', async () => {
+test('card scrolls tabs with grouped actions while keeping the footer outside the scroll area', async () => {
   const f = await fixture({ width: 420, height: 280 }); const p = f.plugin; p.enter(); p.openMenu();
   assert.equal(p.menu.querySelectorAll('.sim-menu-tabs .sim-tab').length, 2);
-  assert.equal(p.menu.querySelector('.sim-menu-other-scroll .sim-tab'), null);
+  assert.ok(p.menu.querySelector('.sim-menu-other-scroll .sim-tab'));
+  assert.equal(p.menu.querySelectorAll('.sim-menu-other-scroll .sim-window-actions').length, 0);
   assert.equal(p.menu.querySelectorAll('.sim-action[data-action-key="dock:things"]').length, 1);
   assert.ok(p.orb.classList.contains('sim-orb--active'));
   assert.ok(p.menu.querySelector('.sim-menu-other-scroll .sim-action[data-action-key="dock:things"]'));
   assert.equal(p.menu.querySelector('.sim-star, .sim-menu-favorites'), null);
-  p.menu.querySelector('.sim-footer button:last-child').click();
+  p.windowActions.querySelector('[data-control-key="exit"]').click();
   assert.equal(p.active, false);
   assert.equal(p.menu, null);
   f.dispose();
@@ -516,29 +1046,24 @@ test('save failure is surfaced without breaking exit', async () => {
   assert.ok(f.messages.some(x => x[0].includes('保存失败'))); f.plugin.leave(); assert.equal(f.plugin.active, false); f.dispose();
 });
 
-test('full immersion keeps only native window controls and drag; restore follows host state', async () => {
+test('full immersion hides the whole toolbar and leaves native controls untouched', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const doc = f.win.document;
   const style = selector => f.win.getComputedStyle(doc.querySelector(selector));
   const toolbar = doc.getElementById('toolbar'); const originalChildren = [...toolbar.children];
-  const extra = doc.createElement('button'); extra.textContent = '宿主其他控制'; doc.getElementById('windowControls').append(extra);
-  let clicks = 0;
-  for (const id of ['minWindow', 'maxWindow', 'restoreWindow', 'closeWindow']) doc.getElementById(id).onclick = () => clicks++;
   p.enter();
-  assert.ok(doc.body.classList.contains('sim-window-strip'));
-  assert.equal(style('#toolbar').height, '28px');
-  assert.equal(style('#toolbar').getPropertyValue('-webkit-app-region'), 'drag');
-  assert.equal(style('#drag').getPropertyValue('-webkit-app-region'), 'drag');
-  for (const selector of ['#barSearch', '#barMore', '#plugin_immersive']) assert.equal(style(selector).display, 'none');
-  assert.equal(f.win.getComputedStyle(extra).display, 'none');
-  assert.equal(style('#maxWindow').display, 'flex'); assert.equal(style('#restoreWindow').display, 'none');
-  for (const id of ['minWindow', 'maxWindow', 'restoreWindow', 'closeWindow']) {
-    assert.equal(style('#' + id).getPropertyValue('-webkit-app-region'), 'no-drag');
-    doc.getElementById(id).click();
-  }
-  assert.equal(clicks, 4); assert.equal(p.mergedRows.size, 0);
+  assert.equal(doc.body.classList.contains('sim-window-strip'), false);
+  assert.equal(style('#toolbar').display, 'none');
+  assert.equal(f.win.getComputedStyle(doc.body).getPropertyValue('--sim-topbar-height'), '0px');
+  assert.equal(doc.querySelector('.sim-minimize'), null); assert.equal(p.mergedRows.size, 0);
   p.openMenu(); assert.ok(p.menu.querySelector('[data-action-key="top:barSearch"]'));
-  p.revealToolbar(); assert.notEqual(style('#barSearch').display, 'none');
-  p.clearNativeTools(); assert.equal(style('#barSearch').display, 'none');
+  p.revealToolbar(); assert.equal(style('#toolbar').display, 'flex');
+  p.clearNativeTools(); assert.equal(style('#toolbar').display, 'none');
+  p.settingsData.windowsTopBar = true; p.applyTopBarSetting();
+  assert.equal(style('#toolbar').display, 'flex'); assert.equal(style('#toolbar').height, '28px');
+  p.settingsData.windowsTopBar = false; p.applyTopBarSetting();
+  assert.ok(p.menu.querySelector('.sim-menu-tabs'));
+  assert.equal(p.menu.querySelectorAll('.sim-window-button').length, 4);
+  assert.equal(style('#toolbar').display, 'none');
   p.leave(); assert.equal(doc.body.classList.contains('sim-window-strip'), false);
   assert.notEqual(style('#barSearch').display, 'none'); assert.equal(style('#toolbar').height, '42px');
   assert.deepEqual([...toolbar.children], originalChildren);
@@ -547,8 +1072,6 @@ test('full immersion keeps only native window controls and drag; restore follows
   // Separate initial-state fixture avoids Happy DOM's stale ancestor matches;
   // live maximize/restore transitions are also exercised in Chromium preview.
   const maximized = await fixture({ frontend: 'desktop', maximized: true }); maximized.plugin.enter();
-  assert.equal(maximized.win.getComputedStyle(maximized.win.document.getElementById('maxWindow')).display, 'none');
-  assert.equal(maximized.win.getComputedStyle(maximized.win.document.getElementById('restoreWindow')).display, 'flex');
   maximized.plugin.leave(); assert.ok(maximized.win.document.body.classList.contains('body--maximize')); maximized.dispose();
 });
 

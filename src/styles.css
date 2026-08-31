@@ -11,11 +11,27 @@ body.sim-active .layout__center .protyle-breadcrumb:not(.sim-page-tools) {
 /* Inset the entire workspace so rounded panels have room around the edges.
    Fixed floating docks do not inherit body padding, so give them the same inset. */
 body.sim-active { --b3-toolbar-height: 0px; --sim-edge-gap: 8px; --sim-topbar-height: 0px; padding: calc(var(--sim-edge-gap) + var(--sim-topbar-height)) var(--sim-edge-gap) var(--sim-edge-gap) !important; box-sizing: border-box; }
-/* Windows always retains native window controls; full tool/tab content is opt-in.
+/* Keep the existing empty top inset draggable without covering any panel. */
+.sim-window-drag {
+  position: fixed; inset: 0 0 auto 0; height: var(--sim-edge-gap, 8px);
+  z-index: 19; background: transparent; user-select: none; cursor: move; -webkit-app-region: drag;
+}
+.sim-window-drag::after {
+  content: attr(title); position: absolute; left: 50%; top: 10px; transform: translate(-50%, -2px);
+  padding: 4px 8px; border-radius: 5px; color: #fff; background: rgba(35, 39, 38, .84);
+  font: 11px/1.2 var(--b3-font-family, system-ui); white-space: nowrap; opacity: 0;
+  pointer-events: none; transition: opacity .12s, transform .12s;
+}
+.sim-window-drag:hover::after { opacity: .9; transform: translate(-50%, 0); }
+body.sim-keep-topbar .sim-window-drag::after { display: none; }
+body.sim-keep-topbar .sim-window-drag { display: none; }
+/* Windows tool/tab content and native window controls are opt-in.
    No mouse-edge trigger, duplicate controls or Electron bridge is needed. */
-body.sim-active.sim-window-strip { --sim-topbar-height: 28px; }
+/* Split the workspace's extra top gap equally above and below the chrome. */
+body.sim-active.sim-window-strip { --sim-topbar-height: 28px; --sim-topbar-offset: calc(var(--sim-edge-gap) / 2); }
 body.sim-active.sim-window-strip #toolbar {
-  display: flex !important; position: fixed !important; inset: 0 0 auto 0 !important;
+  display: flex !important; position: fixed !important; inset: var(--sim-topbar-offset) 0 auto 0 !important;
+  align-items: center !important; padding-top: 0 !important; padding-bottom: 0 !important;
   width: 100% !important; height: var(--sim-topbar-height) !important;
   transform: none !important; opacity: 1 !important; visibility: visible !important;
   min-height: 0 !important; line-height: var(--sim-topbar-height) !important;
@@ -31,30 +47,25 @@ body.sim-active.sim-window-strip #toolbar #drag {
 }
 body.sim-active.sim-window-strip #toolbar #drag::before,
 body.sim-active.sim-window-strip #toolbar #drag::after { display: none !important; content: none !important; }
-body.sim-active.sim-window-strip #toolbar #windowControls { -webkit-app-region: drag !important; }
+body.sim-active.sim-window-strip #toolbar #windowControls { align-items: center !important; -webkit-app-region: drag !important; }
+body.sim-active.sim-keep-topbar #toolbar .sim-topbar-overflow { display: none !important; }
 body.sim-active.sim-window-strip #toolbar :is(button, input, select, textarea, a, label, summary, [role="button"], [role="tab"], [contenteditable="true"], [tabindex]:not([tabindex="-1"]), [onclick], [data-menu="true"], .toolbar__item, .block__icon) { -webkit-app-region: no-drag !important; }
 body.sim-active.sim-window-strip #toolbar :is(.toolbar__item--win, .toolbar__item--close) {
   height: 28px !important; padding-top: 6.25px !important; padding-bottom: 6.25px !important;
   box-sizing: border-box !important;
 }
-/* Hide tools, plugin containers and status content, never the native controls.
-   Native maximize/restore visibility is left to the host's window-state rules. */
-body.sim-active.sim-window-strip:not(.sim-keep-topbar) #toolbar:not(.sim-native-tools) > :not(#drag):not(#windowControls),
-body.sim-active.sim-window-strip:not(.sim-keep-topbar) #toolbar:not(.sim-native-tools) #windowControls > :not(#minWindow):not(#maxWindow):not(#restoreWindow):not(#closeWindow) { display: none !important; }
-body.sim-active.sim-keep-topbar #toolbar .sim-apple-zoom { width: 26px !important; height: 26px !important; padding: 3px !important; }
-body.sim-active.sim-keep-topbar #toolbar .sim-apple-zoom svg { width: 20px !important; height: 20px !important; }
 /* Position the existing tab rows over #drag, without reparenting them or
    reserving a second line inside the document. JS measures the available slot. */
 body.sim-active.sim-keep-topbar .layout__center [data-type="wnd"] > .sim-merged-tabs:not(.fn__none):not([hidden]) {
   display: flex !important; visibility: visible !important; position: fixed !important;
-  left: var(--sim-tabs-left) !important; top: 0 !important; right: auto !important; bottom: auto !important;
+  left: var(--sim-tabs-left) !important; top: var(--sim-topbar-offset) !important; right: auto !important; bottom: auto !important;
   width: var(--sim-tabs-width) !important; height: var(--sim-topbar-height) !important; min-width: 0 !important;
   padding: 0 !important; margin: 0 !important; box-sizing: border-box !important;
   z-index: 21; overflow: hidden; background: transparent !important;
   -webkit-app-region: drag !important;
 }
 body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar {
-  height: var(--sim-topbar-height) !important; min-height: 0 !important; margin: 0 !important;
+  height: var(--sim-topbar-height) !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important;
   background: transparent !important; border-bottom: 0 !important; box-sizing: border-box;
   overflow-x: auto; overflow-y: hidden; align-items: center;
   -webkit-app-region: drag !important;
@@ -68,6 +79,7 @@ body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar > .item {
   margin: 2px 4px !important; height: 24px !important; min-height: 0 !important; max-height: 24px !important;
   padding-top: 0 !important; padding-bottom: 0 !important; line-height: 22px !important;
 }
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar > .item:first-child { margin-left: 0 !important; }
 body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar::-webkit-scrollbar { display: none; }
 body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar:not(.layout-tab-bar--readonly) > [data-id],
 body.sim-active.sim-keep-topbar .sim-merged-tabs :is(button, input, select, textarea, a, label, summary, [role="button"], [role="tab"], [contenteditable="true"], [tabindex]:not([tabindex="-1"]), [onclick], [data-menu="true"], .block__icon) { -webkit-app-region: no-drag !important; }
@@ -104,10 +116,8 @@ body.sim-active #toolbar.sim-native-tools {
   height: 42px !important; z-index: 20; background: var(--b3-theme-background, #fff);
   box-shadow: 0 4px 16px #0002;
 }
-body.sim-active .protyle-breadcrumb.sim-page-tools {
-  display: flex !important; position: absolute; top: 0; left: 0; right: 0; z-index: 10;
-  background: var(--b3-theme-background, #fff); box-shadow: 0 4px 12px #0002;
-}
+/* A revealed page toolbar keeps the host's native document-flow layout and
+   theme. Immersive mode only opts it out of the hidden-breadcrumb selector. */
 .sim-orb, .sim-menu { box-sizing: border-box; color: var(--b3-theme-on-background, #27312f); font-family: var(--b3-font-family, system-ui); }
 /* AssistiveTouch-inspired white disc, neutral rings and a translucent shell.
    Activation changes contrast, without changing the size of the hit target. */
@@ -130,45 +140,76 @@ body.sim-active .protyle-breadcrumb.sim-page-tools {
 .sim-orb--active::before { transform: scale(1.06); box-shadow: 0 0 0 3px #ffffff55, 0 0 0 6px #ffffff20, 0 1px 4px #0003; }
 .sim-orb:active { cursor: grabbing; }
 .sim-menu {
-  position: fixed; width: min(310px, calc(100vw - 16px)); max-height: min(560px, calc(100vh - 16px));
+  --sim-menu-hover: var(--b3-list-hover, #eeeeee);
+  position: fixed; width: min(280px, calc(100vw - 16px)); max-height: min(480px, calc(100vh - 16px));
   display: flex; flex-direction: column; border: 1px solid var(--b3-border-color, #ddd);
-  border-radius: 16px; background: var(--b3-theme-background, #fff); box-shadow: 0 14px 48px #0003;
-  z-index: 26; overflow: hidden; -webkit-app-region: no-drag; font-size: 13px;
-  background: color-mix(in srgb, var(--b3-theme-background, #fff) 86%, transparent);
-  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  border-radius: 10px; background: var(--b3-theme-background, #fff); box-shadow: 0 8px 24px #0002;
+  z-index: 26; overflow: hidden; -webkit-app-region: no-drag; font: 11.5px/16px var(--b3-font-family, system-ui);
   animation: sim-card-in .18s ease-out;
 }
-.sim-menu-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 8px; flex-shrink: 0; }
-.sim-menu-header strong { font-size: 14px; font-weight: 600; }
-.sim-menu-header small { color: var(--b3-theme-on-surface, #777); font-size: 11px; }
-.sim-menu-tabs { display: flex; flex-direction: column; flex: 0 0 auto; max-height: min(260px, 38vh); min-height: 0; padding: 0 8px 6px; border-bottom: 1px solid var(--b3-border-color, #eee); }
+.sim-menu-header { display: flex; align-items: center; padding: 10px 19px 4px; flex-shrink: 0; }
+.sim-menu-header strong { font-size: 12px; font-weight: 600; }
+.sim-menu-tabs { padding: 0 0 4px; }
 .sim-menu-tabs h3 { flex-shrink: 0; margin-top: 6px; }
-.sim-tab-list { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
-.sim-menu .sim-tab { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 30px; padding: 6px 8px; text-align: left; }
+.sim-tab-list { overflow: visible; }
+.sim-menu .sim-tab { box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; padding: 5px 7px; text-align: left; }
 .sim-tab-marker { flex-shrink: 0; font-size: 9px; opacity: .6; }
 .sim-tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sim-menu .sim-tab[aria-current="true"] { background: var(--b3-theme-primary-lightest, #edf5f1); color: var(--b3-theme-primary, #27725c); }
-.sim-menu .sim-tabs-toggle { flex-shrink: 0; padding: 6px 8px; text-align: left; font-size: 11px; color: var(--b3-theme-on-surface, #777); }
-.sim-menu-other-scroll { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 8px; min-height: 0; }
-.sim-menu h3 { margin: 14px 8px 6px; font-size: 11px; font-weight: 500; color: var(--b3-theme-on-surface, #777); }
+.sim-menu .sim-tab[aria-current="true"] { background: var(--sim-menu-hover); font-weight: 500; }
+.sim-menu .sim-tabs-toggle { flex-shrink: 0; padding: 5px 7px; text-align: left; font-size: 11.5px; color: var(--b3-theme-on-surface, #777); }
+.sim-menu-other-scroll { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 4px; min-height: 0; }
+.sim-menu h3 { margin: 9px 7px 4px; font-size: 11.5px; font-weight: 500; color: var(--b3-theme-on-surface, #777); }
 .sim-menu h3 small { margin-left: 6px; font-size: 10px; opacity: .75; }
-.sim-action-group + .sim-action-group { border-top: 1px solid var(--b3-border-color, #eee); margin-top: 6px; }
+.sim-action-group { padding-bottom: 4px; }
+.sim-action-group + .sim-action-group, .sim-menu-tabs + .sim-action-group { border-top: 1px solid var(--b3-border-color, #eee); margin-top: 3px; }
 .sim-empty { margin: 10px 8px; color: var(--b3-theme-on-surface, #777); font-size: 12px; }
-.sim-row { display: flex; align-items: center; gap: 3px; border-radius: 8px; }
-.sim-origin { flex-shrink: 0; margin-right: 8px; color: var(--b3-theme-on-surface, #777); font-size: 10px; opacity: .8; }
-.sim-row:hover { background: var(--b3-list-hover, #f2f5f4); }
-.sim-menu button { font: inherit; color: inherit; border: 0; background: transparent; cursor: pointer; border-radius: 8px; }
-.sim-action { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; padding: 10px 8px; }
-.sim-action span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.sim-action svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
-.sim-footer { display: flex; gap: 6px; flex-shrink: 0; padding: 10px; border-top: 1px solid var(--b3-border-color, #eee); }
-.sim-footer button { padding: 9px 12px; flex: 1; }
-.sim-footer button:last-child { background: var(--b3-theme-primary-lightest, #edf5f1); color: var(--b3-theme-primary, #27725c); }
-.sim-menu button:hover { background: var(--b3-list-hover, #edf1ef); }
-.sim-menu button:focus-visible, .sim-orb:focus-visible { outline: 2px solid var(--b3-theme-primary, #36886e); outline-offset: -2px; }
-.sim-apple-zoom { width: 30px !important; height: 30px !important; padding: 3px !important; border-radius: 50% !important; color: #34c759 !important; transition: transform .15s, filter .15s; }
-.sim-apple-zoom:hover, .sim-apple-zoom:focus-visible { transform: scale(1.08); filter: brightness(.94); }
-.sim-apple-zoom svg { width: 24px !important; height: 24px !important; }
+.sim-row { display: flex; min-width: 0; align-items: center; gap: 3px; border-radius: 5px; }
+.sim-row:hover, .sim-row--active, .sim-row--activefocus { background: var(--sim-menu-hover); }
+.sim-row:hover { cursor: pointer; }
+.sim-menu button { font: inherit; color: inherit; border: 0; background: transparent; cursor: pointer; border-radius: 5px; }
+.sim-action { box-sizing: border-box; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; width: 100%; text-align: left; padding: 5px 7px; min-height: 26px; }
+.sim-menu .sim-action, .sim-menu .sim-action:hover { background: transparent !important; }
+.sim-action-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sim-action svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
+.sim-submenu-chevron { margin-left: auto; flex: 0 0 auto; font-size: 15px; line-height: 1; opacity: .6; }
+.sim-plugin-settings { border-top: 1px solid var(--b3-border-color, #eee); border-radius: 0; margin-top: 4px; padding-top: 4px; }
+.sim-window-actions { display: flex; justify-content: space-between; flex-shrink: 0; gap: 0; padding: 7px 13.5px; background: transparent; color: inherit; -webkit-app-region: no-drag; }
+.sim-window-button { box-sizing: border-box; display: grid; place-items: center; padding: 5px; width: 26px; height: 26px; flex: 0 0 26px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; -webkit-app-region: no-drag; }
+.sim-window-button svg { width: 15px; height: 15px; fill: currentColor; pointer-events: none; }
+.sim-window-button:hover:not(:disabled) { background: var(--b3-list-hover, #eeeeee); }
+.sim-window-button:disabled { opacity: .4; cursor: default; }
+.sim-window-button:focus-visible { outline: 2px solid var(--b3-theme-on-surface, #777); outline-offset: -2px; }
+.sim-menu button:hover:not(.sim-action):not(:disabled) { background: var(--sim-menu-hover); }
+.sim-menu button:disabled { opacity: .4; cursor: default; }
+.sim-menu button:focus-visible, .sim-orb:focus-visible { outline: 2px solid var(--b3-theme-on-surface, #777); outline-offset: -2px; }
+/* The real SiYuan menu is the second card. Its children, parent, event handlers
+   and deeper submenus remain owned by SiYuan. Only position and shell change. */
+body.sim-active .b3-menu.sim-native-submenu {
+  left: var(--sim-submenu-left) !important; top: var(--sim-submenu-top) !important;
+  -webkit-app-region: no-drag;
+}
+body.sim-active .b3-menu.sim-native-submenu,
+body.sim-active .sim-native-submenu .b3-menu__submenu {
+  box-sizing: border-box; width: min(230px, calc(100vw - 32px)) !important; min-width: 0 !important;
+  max-width: calc(100vw - 32px) !important; padding: 5px !important;
+  border: 1px solid var(--b3-border-color, #ddd); border-radius: 10px !important;
+  background: var(--b3-theme-background, #fff); color: var(--b3-theme-on-background, #333);
+  box-shadow: 0 8px 24px #0002; font: 11.5px/16px var(--b3-font-family, system-ui);
+}
+body.sim-active .sim-native-submenu > .b3-menu__items {
+  /* Measure the full usable height before placement. A limit based on the old
+     top position shrinks the menu before it can move upward near the bottom. */
+  max-height: min(340px, calc(100vh - 28px)) !important; overflow-y: auto;
+}
+body.sim-active .sim-native-submenu .b3-menu__submenu { max-height: min(352px, calc(100vh - 16px)); overflow-y: auto; }
+body.sim-active .sim-native-submenu .sim-child-positioned { top: var(--sim-child-top) !important; }
+body.sim-active .sim-native-submenu .b3-menu__item { box-sizing: border-box; min-height: 26px; padding: 5px 7px !important; gap: 6px; border-radius: 5px; font: 11.5px/16px var(--b3-font-family, system-ui) !important; }
+body.sim-active .sim-native-submenu .b3-menu__item :is(.b3-menu__label, span, small) { font-size: 11.5px !important; line-height: 16px !important; }
+body.sim-active .sim-native-submenu .b3-menu__item svg { width: 14px; height: 14px; flex-shrink: 0; }
+body.sim-active .sim-native-submenu .b3-menu__item:hover:not(:disabled) { background: var(--b3-list-hover, #eeeeee); }
+body.sim-active .sim-native-submenu .b3-menu__accelerator { display: none !important; }
+.sim-sync-tip { position: fixed; z-index: 27; box-sizing: border-box; max-width: min(240px, calc(100vw - 16px)); max-height: calc(100vh - 16px); padding: 7px 9px; border: 1px solid var(--b3-border-color, #ddd); border-radius: 7px; background: var(--b3-theme-background, #fff); color: var(--b3-theme-on-background, #333); box-shadow: 0 4px 16px #0002; font: 11px/1.5 var(--b3-font-family, system-ui); white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; pointer-events: none; }
+.sim-immersive-entry svg { fill: currentColor; }
 .sim-orb[hidden], .sim-menu[hidden] { display: none !important; }
 
 @keyframes sim-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
