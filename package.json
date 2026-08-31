@@ -1,0 +1,17 @@
+{
+  "name": "siyuan-plugin-immersive-mode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent immersive mode for SiYuan",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "check": "node --check src/index.js && node --check src/core.js && npm test"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "fflate": "^0.8.2",
+    "happy-dom": "^20.0.0",
+    "pngjs": "^7.0.0"
+  }
+}

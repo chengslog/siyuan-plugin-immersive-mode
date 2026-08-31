@@ -1,0 +1,175 @@
+/* Only the outer chrome is hidden. Sidebar business panels are never removed. */
+body.sim-active:not(.sim-window-strip) #toolbar:not(.sim-native-tools),
+body.sim-active #dockLeft,
+body.sim-active #dockRight,
+body.sim-active #dockBottom,
+body.sim-active #status,
+body.sim-active .layout__center [data-type="wnd"] > .fn__flex:has(> .layout-tab-bar),
+body.sim-active .layout__center .protyle-breadcrumb:not(.sim-page-tools) {
+  display: none !important;
+}
+/* Inset the entire workspace so rounded panels have room around the edges.
+   Fixed floating docks do not inherit body padding, so give them the same inset. */
+body.sim-active { --b3-toolbar-height: 0px; --sim-edge-gap: 8px; --sim-topbar-height: 0px; padding: calc(var(--sim-edge-gap) + var(--sim-topbar-height)) var(--sim-edge-gap) var(--sim-edge-gap) !important; box-sizing: border-box; }
+/* Windows always retains native window controls; full tool/tab content is opt-in.
+   No mouse-edge trigger, duplicate controls or Electron bridge is needed. */
+body.sim-active.sim-window-strip { --sim-topbar-height: 28px; }
+body.sim-active.sim-window-strip #toolbar {
+  display: flex !important; position: fixed !important; inset: 0 0 auto 0 !important;
+  width: 100% !important; height: var(--sim-topbar-height) !important;
+  transform: none !important; opacity: 1 !important; visibility: visible !important;
+  min-height: 0 !important; line-height: var(--sim-topbar-height) !important;
+  z-index: 20; background: transparent !important; border: 0 !important; box-shadow: none !important;
+  -webkit-app-region: drag !important;
+}
+/* The whole chrome is draggable; only interactive controls subtract no-drag.
+   Containers and spacers must not mask otherwise empty parts of the titlebar. */
+body.sim-active.sim-window-strip #toolbar #drag {
+  display: block !important; flex: 1 1 auto !important; min-width: 64px !important;
+  height: var(--sim-topbar-height) !important; align-self: stretch !important;
+  -webkit-app-region: drag !important;
+}
+body.sim-active.sim-window-strip #toolbar #drag::before,
+body.sim-active.sim-window-strip #toolbar #drag::after { display: none !important; content: none !important; }
+body.sim-active.sim-window-strip #toolbar #windowControls { -webkit-app-region: drag !important; }
+body.sim-active.sim-window-strip #toolbar :is(button, input, select, textarea, a, label, summary, [role="button"], [role="tab"], [contenteditable="true"], [tabindex]:not([tabindex="-1"]), [onclick], [data-menu="true"], .toolbar__item, .block__icon) { -webkit-app-region: no-drag !important; }
+body.sim-active.sim-window-strip #toolbar :is(.toolbar__item--win, .toolbar__item--close) {
+  height: 28px !important; padding-top: 6.25px !important; padding-bottom: 6.25px !important;
+  box-sizing: border-box !important;
+}
+/* Hide tools, plugin containers and status content, never the native controls.
+   Native maximize/restore visibility is left to the host's window-state rules. */
+body.sim-active.sim-window-strip:not(.sim-keep-topbar) #toolbar:not(.sim-native-tools) > :not(#drag):not(#windowControls),
+body.sim-active.sim-window-strip:not(.sim-keep-topbar) #toolbar:not(.sim-native-tools) #windowControls > :not(#minWindow):not(#maxWindow):not(#restoreWindow):not(#closeWindow) { display: none !important; }
+body.sim-active.sim-keep-topbar #toolbar .sim-apple-zoom { width: 26px !important; height: 26px !important; padding: 3px !important; }
+body.sim-active.sim-keep-topbar #toolbar .sim-apple-zoom svg { width: 20px !important; height: 20px !important; }
+/* Position the existing tab rows over #drag, without reparenting them or
+   reserving a second line inside the document. JS measures the available slot. */
+body.sim-active.sim-keep-topbar .layout__center [data-type="wnd"] > .sim-merged-tabs:not(.fn__none):not([hidden]) {
+  display: flex !important; visibility: visible !important; position: fixed !important;
+  left: var(--sim-tabs-left) !important; top: 0 !important; right: auto !important; bottom: auto !important;
+  width: var(--sim-tabs-width) !important; height: var(--sim-topbar-height) !important; min-width: 0 !important;
+  padding: 0 !important; margin: 0 !important; box-sizing: border-box !important;
+  z-index: 21; overflow: hidden; background: transparent !important;
+  -webkit-app-region: drag !important;
+}
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar {
+  height: var(--sim-topbar-height) !important; min-height: 0 !important; margin: 0 !important;
+  background: transparent !important; border-bottom: 0 !important; box-sizing: border-box;
+  overflow-x: auto; overflow-y: hidden; align-items: center;
+  -webkit-app-region: drag !important;
+}
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar:not(.layout-tab-bar--readonly) { flex: 1 1 0; min-width: 0 !important; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar--readonly { flex: 0 0 auto !important; min-width: 0 !important; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs .item--readonly { gap: 0 !important; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs .item--readonly,
+body.sim-active.sim-keep-topbar .sim-merged-tabs .item--readonly > .fn__flex-1 { -webkit-app-region: drag !important; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar > .item {
+  margin: 2px 4px !important; height: 24px !important; min-height: 0 !important; max-height: 24px !important;
+  padding-top: 0 !important; padding-bottom: 0 !important; line-height: 22px !important;
+}
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar::-webkit-scrollbar { display: none; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs > .layout-tab-bar:not(.layout-tab-bar--readonly) > [data-id],
+body.sim-active.sim-keep-topbar .sim-merged-tabs :is(button, input, select, textarea, a, label, summary, [role="button"], [role="tab"], [contenteditable="true"], [tabindex]:not([tabindex="-1"]), [onclick], [data-menu="true"], .block__icon) { -webkit-app-region: no-drag !important; }
+body.sim-active.sim-keep-topbar .sim-merged-tabs .layout-tab-bar--readonly [data-type="more"].sim-tab-switch-hidden { display: none !important; }
+body.sim-active > .layout { margin-top: 0 !important; padding-top: 0 !important; }
+body.sim-active .sim-layout-row { margin-left: 0 !important; margin-right: 0 !important; margin-bottom: 0 !important; }
+body.sim-active .layout__dockl,
+body.sim-active .layout__dockr { margin-top: 0 !important; }
+/* One continuous, theme-colored outline on all four sides of each panel.
+   Do not keep a second outline around the center's wrapper / split panes. */
+body.sim-active .layout__center { border: 0 !important; box-shadow: none !important; }
+body.sim-active .layout__dockl,
+body.sim-active .layout__dockr,
+body.sim-active .layout__dockb,
+body.sim-active .layout__center [data-type="wnd"] > .layout-tab-container {
+  border: 1px solid var(--b3-border-color, var(--b3-theme-surface-lighter, #ddd)) !important;
+  box-sizing: border-box !important;
+}
+body.sim-active .layout__dockl.layout--float,
+body.sim-active .layout__dockr.layout--float {
+  top: calc(var(--sim-edge-gap) + var(--sim-topbar-height)) !important; bottom: var(--sim-edge-gap) !important;
+  height: auto !important; max-height: none !important;
+  border-radius: var(--b3-border-radius-b, 12px) !important;
+}
+body.sim-active .layout__dockl.layout--float { left: var(--sim-edge-gap) !important; }
+body.sim-active .layout__dockr.layout--float { right: var(--sim-edge-gap) !important; }
+body.sim-active .layout__dockb.layout--float {
+  left: var(--sim-edge-gap) !important; right: var(--sim-edge-gap) !important; bottom: var(--sim-edge-gap) !important;
+  max-height: none !important; border-radius: var(--b3-border-radius-b, 12px) !important;
+}
+body.sim-active .layout__center [data-type="wnd"] > .layout-tab-container { border-radius: var(--b3-border-radius-b, 12px); }
+body.sim-active #toolbar.sim-native-tools {
+  display: flex !important; position: fixed !important; inset: 0 0 auto 0 !important;
+  height: 42px !important; z-index: 20; background: var(--b3-theme-background, #fff);
+  box-shadow: 0 4px 16px #0002;
+}
+body.sim-active .protyle-breadcrumb.sim-page-tools {
+  display: flex !important; position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+  background: var(--b3-theme-background, #fff); box-shadow: 0 4px 12px #0002;
+}
+.sim-orb, .sim-menu { box-sizing: border-box; color: var(--b3-theme-on-background, #27312f); font-family: var(--b3-font-family, system-ui); }
+/* AssistiveTouch-inspired white disc, neutral rings and a translucent shell.
+   Activation changes contrast, without changing the size of the hit target. */
+.sim-orb {
+  position: fixed; width: 42px; height: 42px; padding: 0; border: 1px solid #ffffff38;
+  border-radius: 14px; background: rgba(45, 47, 52, .48);
+  box-shadow: 0 2px 10px #0002; opacity: .55;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  z-index: 25; cursor: grab; touch-action: none; user-select: none; -webkit-app-region: no-drag;
+  display: grid; place-items: center; transition: opacity .2s, background .2s, box-shadow .2s;
+}
+.sim-orb::before {
+  content: ""; width: 22px; height: 22px; border-radius: 50%;
+  background: linear-gradient(#fff, #f1f1f3); border: 1px solid #fff;
+  box-shadow: 0 0 0 3px #ffffff30, 0 0 0 6px #ffffff12, 0 1px 4px #0003;
+  pointer-events: none; transition: transform .2s, box-shadow .2s;
+}
+.sim-orb:hover, .sim-orb:focus-visible { opacity: .9; }
+.sim-orb--active { opacity: 1; background: rgba(45, 47, 52, .68); box-shadow: 0 3px 14px #0003; }
+.sim-orb--active::before { transform: scale(1.06); box-shadow: 0 0 0 3px #ffffff55, 0 0 0 6px #ffffff20, 0 1px 4px #0003; }
+.sim-orb:active { cursor: grabbing; }
+.sim-menu {
+  position: fixed; width: min(310px, calc(100vw - 16px)); max-height: min(560px, calc(100vh - 16px));
+  display: flex; flex-direction: column; border: 1px solid var(--b3-border-color, #ddd);
+  border-radius: 16px; background: var(--b3-theme-background, #fff); box-shadow: 0 14px 48px #0003;
+  z-index: 26; overflow: hidden; -webkit-app-region: no-drag; font-size: 13px;
+  background: color-mix(in srgb, var(--b3-theme-background, #fff) 86%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  animation: sim-card-in .18s ease-out;
+}
+.sim-menu-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 8px; flex-shrink: 0; }
+.sim-menu-header strong { font-size: 14px; font-weight: 600; }
+.sim-menu-header small { color: var(--b3-theme-on-surface, #777); font-size: 11px; }
+.sim-menu-tabs { display: flex; flex-direction: column; flex: 0 0 auto; max-height: min(260px, 38vh); min-height: 0; padding: 0 8px 6px; border-bottom: 1px solid var(--b3-border-color, #eee); }
+.sim-menu-tabs h3 { flex-shrink: 0; margin-top: 6px; }
+.sim-tab-list { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.sim-menu .sim-tab { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 30px; padding: 6px 8px; text-align: left; }
+.sim-tab-marker { flex-shrink: 0; font-size: 9px; opacity: .6; }
+.sim-tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sim-menu .sim-tab[aria-current="true"] { background: var(--b3-theme-primary-lightest, #edf5f1); color: var(--b3-theme-primary, #27725c); }
+.sim-menu .sim-tabs-toggle { flex-shrink: 0; padding: 6px 8px; text-align: left; font-size: 11px; color: var(--b3-theme-on-surface, #777); }
+.sim-menu-other-scroll { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 8px; min-height: 0; }
+.sim-menu h3 { margin: 14px 8px 6px; font-size: 11px; font-weight: 500; color: var(--b3-theme-on-surface, #777); }
+.sim-menu h3 small { margin-left: 6px; font-size: 10px; opacity: .75; }
+.sim-action-group + .sim-action-group { border-top: 1px solid var(--b3-border-color, #eee); margin-top: 6px; }
+.sim-empty { margin: 10px 8px; color: var(--b3-theme-on-surface, #777); font-size: 12px; }
+.sim-row { display: flex; align-items: center; gap: 3px; border-radius: 8px; }
+.sim-origin { flex-shrink: 0; margin-right: 8px; color: var(--b3-theme-on-surface, #777); font-size: 10px; opacity: .8; }
+.sim-row:hover { background: var(--b3-list-hover, #f2f5f4); }
+.sim-menu button { font: inherit; color: inherit; border: 0; background: transparent; cursor: pointer; border-radius: 8px; }
+.sim-action { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; padding: 10px 8px; }
+.sim-action span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sim-action svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
+.sim-footer { display: flex; gap: 6px; flex-shrink: 0; padding: 10px; border-top: 1px solid var(--b3-border-color, #eee); }
+.sim-footer button { padding: 9px 12px; flex: 1; }
+.sim-footer button:last-child { background: var(--b3-theme-primary-lightest, #edf5f1); color: var(--b3-theme-primary, #27725c); }
+.sim-menu button:hover { background: var(--b3-list-hover, #edf1ef); }
+.sim-menu button:focus-visible, .sim-orb:focus-visible { outline: 2px solid var(--b3-theme-primary, #36886e); outline-offset: -2px; }
+.sim-apple-zoom { width: 30px !important; height: 30px !important; padding: 3px !important; border-radius: 50% !important; color: #34c759 !important; transition: transform .15s, filter .15s; }
+.sim-apple-zoom:hover, .sim-apple-zoom:focus-visible { transform: scale(1.08); filter: brightness(.94); }
+.sim-apple-zoom svg { width: 24px !important; height: 24px !important; }
+.sim-orb[hidden], .sim-menu[hidden] { display: none !important; }
+
+@keyframes sim-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .sim-menu { animation: none; } }
