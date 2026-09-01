@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { Window } from 'happy-dom';
 import { createRequire } from 'node:module';
 import { unzipSync } from 'fflate';
+import { PNG } from 'pngjs';
 const require = createRequire(import.meta.url);
 const { normalizeSettings, orbPosition, discoverActions, mergedTabSlots, tabsOverflow } = require('../src/core.js');
 const bundle = readFileSync(new URL('../dist/index.js', import.meta.url), 'utf8');
@@ -70,61 +71,26 @@ test('settings sanitize corrupt data, deduplicate favorites, clamp coordinates',
   assert.equal(normalizeSettings(null).favorites.length, 0);
 });
 
-test('resource auto-entry is opt-in, saves immediately and stops when disabled', async () => {
+test('startup auto-entry is opt-in and its setting saves for the next launch', async () => {
   const f = await fixture(); const { plugin: p, win } = f;
-  const wait = () => new Promise(resolve => setTimeout(resolve, 60));
-  const tabs = win.document.querySelector('.layout-tab-bar');
-  const addTab = id => { const tab = win.document.createElement('li'); tab.dataset.id = id; tabs.append(tab); return tab; };
-  assert.deepEqual(Array.from(p.setting.items, item => item.title), ['Windows：保留顶部工具栏', '资源打开时进入沉浸模式', '页签默认展示数量']);
-  addTab('before-enabled'); await wait(); assert.equal(p.active, false);
-  const toggle = p.setting.items.find(item => item.title === '资源打开时进入沉浸模式').createActionElement();
-  assert.equal(toggle.checked, false);
+  assert.deepEqual(Array.from(p.setting.items, item => item.title), ['桌面客户端：保留顶部工具栏', '启动思源时进入沉浸模式', '页签默认展示数量']);
+  const toggle = p.setting.items.find(item => item.title === '启动思源时进入沉浸模式').createActionElement();
+  assert.equal(toggle.checked, false); assert.equal(p.active, false);
   toggle.checked = true; toggle.dispatchEvent(new win.Event('change')); await p.pendingSave;
   assert.equal(f.saves.at(-1).data.autoEnterOnResourceOpen, true);
-  await wait(); assert.equal(p.active, false, 'enabling does not enter for existing tabs');
-  addTab('new-resource'); await wait(); assert.equal(p.active, true);
-  p.openMenu(); assert.equal(p.menu.querySelector('.sim-origin'), null);
-  p.leave(); await wait(); assert.equal(p.active, false, 'manual exit remains normal');
-  toggle.checked = false; toggle.dispatchEvent(new win.Event('change')); await p.pendingSave;
-  addTab('after-disabled'); await wait(); assert.equal(p.active, false);
-  assert.equal(p.resourceObserver, null); assert.equal(f.saves.at(-1).data.autoEnterOnResourceOpen, false);
+  assert.equal(p.active, false, 'enabling applies on the next launch');
   f.dispose();
+  const restarted = await fixture({ saved: { autoEnterOnResourceOpen: true } });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(restarted.plugin.active, true); restarted.dispose();
 });
 
-test('resource auto-entry ignores existing tabs, editor updates, tab moves and transient tabs', async () => {
-  const f = await fixture({ saved: { autoEnterOnResourceOpen: true } }); const { plugin: p, win } = f;
-  const wait = () => new Promise(resolve => setTimeout(resolve, 60));
-  const doc = win.document, tabs = doc.querySelector('.layout-tab-bar');
-  await wait(); assert.equal(p.active, false, 'restored tabs do not trigger entry');
-  tabs.append(tabs.firstElementChild);
-  tabs.firstElementChild.classList.add('item--focus');
-  doc.querySelector('#editor').append(doc.createElement('span'));
-  const transient = doc.createElement('li'); transient.dataset.id = 'transient'; tabs.append(transient); transient.remove();
-  await wait(); assert.equal(p.active, false);
-  const split = doc.createElement('div'); split.innerHTML = '<ul class="layout-tab-bar"><li data-id="attachment">附件</li></ul>';
-  doc.querySelector('.layout__center').append(split); await wait(); assert.equal(p.active, true);
-  p.leave();
-  tabs.append(split.querySelector('li')); split.remove(); await wait(); assert.equal(p.active, false, 'moving a known tab does not reenter');
-  const next = doc.createElement('li'); next.dataset.id = 'another-resource'; tabs.append(next);
-  await wait(); assert.equal(p.active, true, 'the next new resource enters again');
-  f.dispose(); assert.equal(p.resourceObserver, null); assert.equal(p.resourceEnterFrame, null);
-});
-
-test('pending resource entry is cancelled by exit, disabling or unload', async () => {
-  for (const cancel of ['leave', 'disable', 'unload']) {
-    const f = await fixture({ saved: { autoEnterOnResourceOpen: true } }); const { plugin: p, win } = f;
-    let scheduled, cancelled = false;
-    win.requestAnimationFrame = cb => { scheduled = cb; return 123; };
-    win.cancelAnimationFrame = id => { if (id === 123) cancelled = true; };
-    const tab = win.document.createElement('li'); tab.dataset.id = 'pending-resource'; win.document.querySelector('.layout-tab-bar').append(tab);
-    await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(typeof scheduled, 'function');
-    if (cancel === 'leave') p.leave();
-    else if (cancel === 'unload') p.onunload();
-    else { p.settingsData.autoEnterOnResourceOpen = false; p.configureResourceAutoEnter(); }
-    assert.equal(cancelled, true); assert.equal(p.resourceEnterFrame, null);
-    scheduled(); assert.equal(p.active, false);
-    f.dispose();
-  }
+test('startup auto-entry no longer reacts to newly opened resource tabs', async () => {
+  const f = await fixture(); const { plugin: p, win } = f;
+  const tab = win.document.createElement('li'); tab.dataset.id = 'new-resource';
+  win.document.querySelector('.layout-tab-bar').append(tab);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(p.active, false); assert.equal(p.resourceObserver == null, true); f.dispose();
 });
 
 test('top entry keeps one native tooltip synchronized with the immersive state', async () => {
@@ -136,6 +102,17 @@ test('top entry keeps one native tooltip synchronized with the immersive state',
   assert.equal(p.topButton.hasAttribute('title'), false);
   p.leave(); assert.equal(p.topButton.getAttribute('aria-label'), '进入沉浸模式 · Alt+Shift+I');
   f.dispose(); assert.equal(f.win.document.querySelector('#sim-ui-style'), null);
+});
+
+test('SiYuan plugin-menu clone keeps the immersive icon theme blue', async () => {
+  const f = await fixture(); const doc = f.win.document;
+  const item = doc.createElement('button'); item.className = 'b3-menu__item';
+  item.innerHTML = '<svg class="b3-menu__icon"><path d="M950.857143 73.142857 cloned-frame"></path><path d="entry-or-exit"></path></svg>';
+  doc.body.append(item);
+  const icon = item.querySelector('svg');
+  assert.equal(f.win.getComputedStyle(icon).color, '#4c7cf3');
+  assert.equal(f.win.getComputedStyle(icon).fill, 'currentColor');
+  f.dispose();
 });
 
 test('top entry contains its pointer event and defers icon replacement until host delegation finishes', async () => {
@@ -157,7 +134,9 @@ test('compact settings apply in ordinary and immersive modes and destroy on unlo
   assert.equal(p.setting.options.height, 'fit-content'); assert.equal(p.setting.options.confirmCallback, undefined);
   p.setting.open('沉浸模式设置'); assert.ok(p.setting.dialog.element.classList.contains('sim-settings-dialog'));
   const manifest = require('../plugin.json');
-  assert.equal(p.setting.dialog.element.querySelector('.sim-settings-version').textContent, `${manifest.name} · v${manifest.version}`);
+  const version = p.setting.dialog.element.querySelector('.sim-settings-version');
+  assert.equal(version.textContent, `${manifest.name} · v${manifest.version}`);
+  assert.equal(f.win.getComputedStyle(version).textAlign, 'left');
   assert.ok(f.win.document.querySelector('#sim-ui-style')); p.setting.dialog.destroy();
   p.enter(); p.openMenu(); p.menu.querySelector('[data-action-key="builtin:plugin-settings"]').click();
   const dialog = p.setting.dialog.element; assert.ok(dialog.classList.contains('sim-settings-dialog'));
@@ -208,8 +187,8 @@ test('toolbar tools that conflict with page-aligned tabs remain reachable and re
 test('orb stays in ordinary small viewport after resize', () => {
   for (const width of [180, 360, 1920]) for (const height of [120, 400, 1080]) for (const side of ['left', 'right']) {
     const p = orbPosition({ side, y: 4 }, width, height);
-    assert.ok(p.x >= 0 && p.x + 42 <= width);
-    assert.ok(p.y >= 0 && p.y + 42 <= height);
+    assert.ok(p.x >= 0 && p.x + 32 <= width);
+    assert.ok(p.y >= 0 && p.y + 32 <= height);
   }
 });
 
@@ -396,16 +375,17 @@ function nativeMenuFixture(f) {
   return { menu, choice, open, owner, counts: () => ({ opens, executions, closes }) };
 }
 
-test('plugin settings is a menu item and browser control dock has only exit without hiding page tools', async () => {
+test('plugin settings and header exit remain available in browser without a window control dock', async () => {
   for (const options of [{}, { frontend: 'browser-desktop', backend: 'docker' }]) {
     const f = await fixture(options); const p = f.plugin;
     p.enter(); p.openMenu();
     assert.equal(p.menu.querySelector('[data-action-group="page"], [data-action-key="builtin:page-tools"], [data-action-key="builtin:settings"]'), null);
     assert.ok(f.win.document.querySelector('.protyle-breadcrumb.sim-page-tools'));
-    assert.equal(p.menu.querySelector('.sim-window-actions'), p.windowActions);
-    assert.equal(p.windowActions.parentElement, p.menu);
-    assert.ok(p.windowActions.classList.contains('sim-control-dock'));
-    assert.deepEqual([...p.windowActions.querySelectorAll('button')].map(el => el.getAttribute('aria-label')), ['退出沉浸']);
+    assert.equal(p.windowActions, null);
+    assert.equal(p.menu.querySelector('.sim-window-actions'), null);
+    const exit = p.menu.querySelector('.sim-menu-header [data-control-key="exit"]');
+    assert.equal(exit.getAttribute('aria-label'), '退出沉浸');
+    assert.equal(f.win.getComputedStyle(exit).color, '#4c7cf3');
     const settings = p.menu.querySelector('[data-action-key="builtin:plugin-settings"]');
     assert.equal(settings.textContent, '插件设置');
     assert.equal(settings.querySelector('use').getAttribute('href'), '#iconSettings');
@@ -456,7 +436,7 @@ test('sync keeps a fixed label and hover displays fresh host information without
   assert.equal(doc.querySelector('.sim-sync-tip'), null); f.dispose();
 });
 
-test('desktop control dock follows live window state and proxies native clicks without moving controls', async () => {
+test('desktop card controls follow live window state and proxy native clicks without moving controls', async () => {
   for (const backend of ['windows', 'linux', 'darwin']) {
     const f = await fixture({ frontend: 'desktop', backend }); const p = f.plugin; const doc = f.win.document;
     const controls = doc.getElementById('windowControls'); const nodes = [...controls.children];
@@ -502,7 +482,7 @@ test('hover opens real submenu once and keeps it usable across the gap and follo
   f.dispose();
 });
 
-test('window controls use a proportional floating dock inside the card bottom', async () => {
+test('desktop controls use a four-button dock inside the card bottom', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const win = f.win;
   p.enter();
   assert.equal(win.document.querySelector('.sim-window-actions'), null);
@@ -512,10 +492,15 @@ test('window controls use a proportional floating dock inside the card bottom', 
   assert.equal(controls.parentElement, p.menu);
   assert.equal(p.menu.querySelector('.sim-window-actions'), controls);
   assert.equal(p.menu.lastElementChild, controls);
-  assert.ok(p.menu.classList.contains('sim-menu--with-control-dock'));
+  assert.equal(p.menu.classList.contains('sim-menu--with-control-dock'), false);
+  assert.equal(controls.classList.contains('sim-control-dock'), true);
   assert.equal(controls.querySelectorAll('button').length, 4);
+  assert.equal(p.menu.querySelector('.sim-menu-header [data-control-key="exit"]'), null);
   assert.notEqual(win.getComputedStyle(controls).position, 'fixed');
+  assert.equal(win.getComputedStyle(controls).justifyContent, 'space-around');
+  assert.equal(win.getComputedStyle(controls).gap, '4px');
   assert.equal(win.getComputedStyle(controls).width, 'calc(100% - 24px)');
+  assert.equal(win.getComputedStyle(controls).minHeight, '34px');
   assert.equal(win.getComputedStyle(controls).borderRadius, '10px');
   for (const control of controls.querySelectorAll('button')) {
     assert.equal(win.getComputedStyle(control).width, '22px');
@@ -525,7 +510,7 @@ test('window controls use a proportional floating dock inside the card bottom', 
   assert.equal(controls.previousElementSibling.className, 'sim-menu-other-scroll');
   controls.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
   assert.equal(p.menu.isConnected, true, 'the dock is part of the card interaction surface');
-  p.renderMenu(); assert.equal(win.document.querySelectorAll('.sim-control-dock').length, 1);
+  p.renderMenu(); assert.equal(win.document.querySelectorAll('.sim-window-actions').length, 1);
   p.closeMenu(); assert.equal(p.windowActions, null); assert.equal(controls.isConnected, false);
   p.openMenu(); p.leave(); assert.equal(win.document.querySelector('.sim-window-actions'), null);
   f.dispose();
@@ -741,14 +726,17 @@ test('registered plugin buttons remain reachable after another collector moves t
   f.dispose();
 });
 
-test('entry and exit use supplied vectors while control dock uses SiYuan icon symbols', async () => {
+test('entry and exit use supplied vectors while card controls use SiYuan icon symbols', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin;
   const enter = p.topButton.querySelectorAll('path')[1].getAttribute('d');
   assert.ok(enter.startsWith('M775.314286 204.8'));
   assert.equal(p.topButton.querySelector('svg').getAttribute('viewBox'), '0 0 1024 1024');
+  assert.equal(f.win.getComputedStyle(p.topButton).color, '#4c7cf3');
   p.enter(); p.openMenu();
   const exit = p.windowActions.querySelector('[data-control-key="exit"] path:last-child').getAttribute('d');
   assert.ok(exit.startsWith('M811.885714 438.857143'));
+  assert.equal(f.win.getComputedStyle(p.topButton).color, '#4c7cf3');
+  assert.equal(f.win.getComputedStyle(p.windowActions.querySelector('[data-control-key="exit"]')).color, '#4c7cf3');
   assert.equal(p.topButton.querySelector('path:last-child').getAttribute('d'), exit);
   for (const [key, icon] of [['minimize','iconMin'],['maximize','iconMax'],['close','iconClose']]) {
     assert.equal(p.windowActions.querySelector(`[data-control-key="${key}"] use`).getAttribute('href'), `#${icon}`);
@@ -826,10 +814,10 @@ test('card displays location groups and moved actions follow their current group
   assert.equal(p.menu.querySelectorAll('.sim-action[data-action-key="dock:things"]').length, 1); f.dispose();
 });
 
-test('Windows topbar setting is off by default, applies live, persists and cleans up without changing native nodes', async () => {
+test('desktop topbar setting is off by default, applies live, persists and cleans up without changing native nodes', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const doc = f.win.document;
   const source = doc.getElementById('barSearch'); let calls = 0; source.onclick = () => calls++;
-  const control = p.setting.items.find(item => item.title === 'Windows：保留顶部工具栏').createActionElement();
+  const control = p.setting.items.find(item => item.title === '桌面客户端：保留顶部工具栏').createActionElement();
   assert.equal(control.checked, false); assert.equal(control.disabled, false);
   p.enter(); assert.equal(doc.body.classList.contains('sim-keep-topbar'), false);
   for (let i = 0; i < 3; i++) {
@@ -854,16 +842,18 @@ test('Windows topbar setting is off by default, applies live, persists and clean
   assert.ok(restarted.win.document.body.classList.contains('sim-keep-topbar')); restarted.dispose();
 });
 
-test('Windows setting cannot activate on browser, Docker, Linux or macOS even with synced preferences', async () => {
-  for (const options of [{ frontend: 'browser-desktop' }, { frontend: 'desktop', backend: 'docker' }, { frontend: 'desktop', platform: 'Linux x86_64', backend: 'linux' }, { frontend: 'desktop', platform: 'MacIntel', backend: 'darwin' }]) {
+test('desktop topbar setting activates on native desktop clients but not browser or Docker', async () => {
+  for (const options of [{ frontend: 'desktop', platform: 'Linux x86_64', backend: 'linux' }, { frontend: 'desktop', platform: 'MacIntel', backend: 'darwin' }]) {
     const f = await fixture({ ...options, saved: { windowsTopBar: true } });
-    const control = f.plugin.setting.items.find(item => item.title === 'Windows：保留顶部工具栏').createActionElement();
+    const control = f.plugin.setting.items.find(item => item.title === '桌面客户端：保留顶部工具栏').createActionElement();
+    assert.equal(control.disabled, false); f.plugin.enter();
+    assert.equal(f.win.document.body.classList.contains('sim-keep-topbar'), true); f.dispose();
+  }
+  for (const options of [{ frontend: 'browser-desktop' }, { frontend: 'desktop', backend: 'docker' }]) {
+    const f = await fixture({ ...options, saved: { windowsTopBar: true } });
+    const control = f.plugin.setting.items.find(item => item.title === '桌面客户端：保留顶部工具栏').createActionElement();
     assert.equal(control.disabled, true); f.plugin.enter();
-    assert.equal(f.win.document.body.classList.contains('sim-keep-topbar'), false);
-    assert.equal(f.win.document.body.classList.contains('sim-window-strip'), false);
-    assert.equal(f.win.getComputedStyle(f.win.document.getElementById('toolbar')).display, 'none');
-    control.dispatchEvent(new f.win.Event('change'));
-    assert.equal(f.saves.length, 0); f.dispose();
+    assert.equal(f.win.document.body.classList.contains('sim-keep-topbar'), false); f.dispose();
   }
 });
 
@@ -1039,17 +1029,17 @@ test('removed or replaced switcher is restored and observer tracks tab widths fo
   f.dispose();
 });
 
-test('resizing an open card keeps its page actions and control dock exit available', async () => {
+test('resizing an open card keeps its page actions and header exit available', async () => {
   const f = await fixture(); f.plugin.enter(); f.plugin.openMenu();
   f.sandbox.innerWidth = 420; f.sandbox.innerHeight = 280;
   f.win.dispatchEvent(new f.win.Event('resize'));
   assert.ok([...f.plugin.menu.querySelectorAll('button')].some(x => x.textContent.includes('文档二')));
-  assert.equal(f.plugin.windowActions.querySelector('[data-control-key="exit"]').getAttribute('aria-label'), '退出沉浸');
+  assert.equal(f.plugin.menu.querySelector('.sim-menu-header [data-control-key="exit"]').getAttribute('aria-label'), '退出沉浸');
   f.dispose();
 });
 
-test('card scrolls tabs with grouped actions while keeping the control dock fixed inside its bottom', async () => {
-  const f = await fixture({ width: 420, height: 280 }); const p = f.plugin; p.enter(); p.openMenu();
+test('card scrolls tabs with grouped actions while keeping desktop window controls fixed inside its bottom', async () => {
+  const f = await fixture({ width: 420, height: 280, frontend: 'desktop' }); const p = f.plugin; p.enter(); p.openMenu();
   assert.equal(p.menu.querySelectorAll('.sim-menu-tabs .sim-tab').length, 2);
   assert.ok(p.menu.querySelector('.sim-menu-other-scroll .sim-tab'));
   assert.equal(p.menu.querySelectorAll('.sim-menu-other-scroll .sim-window-actions').length, 0);
@@ -1096,7 +1086,8 @@ test('full immersion hides the whole toolbar and leaves native controls untouche
   assert.equal(style('#toolbar').display, 'flex'); assert.equal(style('#toolbar').height, '28px');
   p.settingsData.windowsTopBar = false; p.applyTopBarSetting();
   assert.ok(p.menu.querySelector('.sim-menu-tabs'));
-  assert.equal(p.menu.querySelectorAll('.sim-window-button').length, 4);
+  assert.equal(p.menu.querySelectorAll('.sim-menu-header > .sim-window-button').length, 0);
+  assert.equal(p.menu.querySelectorAll('.sim-tab-close').length, 2);
   assert.equal(p.windowActions.querySelectorAll('.sim-window-button').length, 4);
   assert.equal(style('#toolbar').display, 'none');
   p.leave(); assert.equal(doc.body.classList.contains('sim-window-strip'), false);
@@ -1160,6 +1151,7 @@ test('tab folding preserves original nodes and active indicator; reopen resets t
   p.enter(); p.openMenu();
   assert.equal(p.menu.querySelectorAll('.sim-tab').length, 1);
   assert.equal(p.menu.querySelector('.sim-tab').getAttribute('aria-current'), 'true');
+  assert.ok(p.menu.querySelector('.sim-tab[aria-current="true"]').closest('.sim-tab-row').classList.contains('sim-tab-row--active'));
   p.menu.querySelector('.sim-tabs-toggle').click();
   assert.equal(p.menu.querySelectorAll('.sim-tab').length, 2);
   assert.equal(p.menu.querySelector('.sim-tabs-toggle').getAttribute('aria-expanded'), 'true');
@@ -1171,6 +1163,20 @@ test('tab folding preserves original nodes and active indicator; reopen resets t
   p.menu.querySelector('.sim-tabs-toggle').click(); p.closeMenu(); p.openMenu();
   assert.equal(p.menu.querySelectorAll('.sim-tab').length, 1);
   assert.equal(original.parentElement, parent); assert.equal(parent.children.length, 2);
+  f.dispose();
+});
+
+test('floating tab close reuses the native close control without switching the tab', async () => {
+  const f = await fixture(); const p = f.plugin; const doc = f.win.document;
+  const tab = doc.querySelector('[data-id="doc-2"]'); const nativeClose = doc.createElement('span');
+  nativeClose.className = 'item__close'; let closes = 0, switches = 0;
+  nativeClose.onclick = event => { event.stopPropagation(); closes++; tab.remove(); };
+  tab.onclick = () => switches++; tab.append(nativeClose);
+  p.enter(); p.openMenu();
+  const close = p.menu.querySelector('[data-tab-key$=":doc-2"]')?.closest('.sim-tab-row')?.querySelector('.sim-tab-close');
+  assert.ok(close); assert.equal(close.getAttribute('aria-label'), '关闭页签：文档二');
+  assert.equal(f.win.getComputedStyle(close).color, '#d84c4c');
+  close.click(); assert.equal(closes, 1); assert.equal(switches, 0); assert.equal(p.active, true); assert.ok(p.menu.isConnected);
   f.dispose();
 });
 
@@ -1200,10 +1206,14 @@ test('open card observes tab title, additions, focus and removals but ignores ed
 });
 
 test('release archive is flat and contains executable CommonJS plugin', () => {
-  const zip = unzipSync(readFileSync(new URL('../artifacts/siyuan-plugin-immersive-mode-0.1.0.zip', import.meta.url)));
-  assert.deepEqual(Object.keys(zip).sort(), ['README.md', 'i18n/en-US.json', 'i18n/en_US.json', 'i18n/zh-CN.json', 'i18n/zh_CN.json', 'icon.png', 'index.js', 'plugin.json']);
+  const zip = unzipSync(readFileSync(new URL('../package.zip', import.meta.url)));
+  assert.deepEqual(Object.keys(zip).sort(), ['README.md', 'i18n/en-US.json', 'i18n/en_US.json', 'i18n/zh-CN.json', 'i18n/zh_CN.json', 'icon.png', 'index.css', 'index.js', 'plugin.json', 'preview.png']);
+  assert.ok(zip['icon.png'].length <= 20 * 1024, 'marketplace icon stays within the recommended 20KB limit');
+  const icon = PNG.sync.read(Buffer.from(zip['icon.png']));
+  assert.deepEqual([icon.width, icon.height], [160, 160]);
+  assert.ok(zip['preview.png'].length <= 200 * 1024, 'marketplace preview stays within the recommended 200KB limit');
   const manifest = JSON.parse(new TextDecoder().decode(zip['plugin.json']));
   assert.equal(manifest.name, 'siyuan-plugin-immersive-mode');
-  assert.deepEqual(Object.values(manifest.displayName), ['Immersive 沉浸模式', 'Immersive 沉浸模式', 'Immersive 沉浸模式']);
+  assert.deepEqual(Object.values(manifest.displayName), ['Immersive Mode', 'Immersive 沉浸模式', 'Immersive 沉浸模式']);
   assert.ok(zip['index.js'].length > 1000);
 });

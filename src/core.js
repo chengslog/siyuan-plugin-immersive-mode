@@ -20,7 +20,7 @@ function normalizeSettings(value) {
 function clamp(value, min, max) { return Math.max(min, Math.min(value, Math.max(min, max))); }
 
 function orbPosition(settings, width, height) {
-  return { x: settings.side === "left" ? 8 : Math.max(8, width - 50), y: clamp(settings.y * (height - 42), 8, height - 50) };
+  return { x: settings.side === "left" ? 8 : Math.max(8, width - 40), y: clamp(settings.y * (height - 32), 8, height - 40) };
 }
 
 // Share the toolbar's actual free space; never cover tool/window controls.

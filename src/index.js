@@ -70,26 +70,26 @@ module.exports = class ImmersiveMode extends Plugin {
         version.textContent = `${pluginName} · v${pluginVersion}`; content.append(version);
       }
     };
-    this.setting.addItem({ title: 'Windows：保留顶部工具栏', description: '工具与页签保留在顶部，仅 Windows 客户端生效。', createActionElement: () => {
+    this.setting.addItem({ title: '桌面客户端：保留顶部工具栏', description: '工具与页签保留在顶部，仅桌面客户端生效。', createActionElement: () => {
       const toggle = document.createElement('input');
       toggle.type = 'checkbox'; toggle.className = 'b3-switch';
-      toggle.setAttribute('aria-label', 'Windows：保留顶部工具栏');
+      toggle.setAttribute('aria-label', '桌面客户端：保留顶部工具栏');
       toggle.checked = this.settingsData.windowsTopBar;
-      toggle.disabled = !this.isWindowsDesktop;
+      toggle.disabled = !this.isDesktopClient;
       toggle.addEventListener('change', () => {
-        if (!this.isWindowsDesktop) return;
+        if (!this.isDesktopClient) return;
         this.settingsData.windowsTopBar = toggle.checked;
         this.applyTopBarSetting(); this.savePreferences();
       });
       return toggle;
     } });
-    this.setting.addItem({ title: '资源打开时进入沉浸模式', description: '新开资源页签时自动进入，默认关闭。', createActionElement: () => {
+    this.setting.addItem({ title: '启动思源时进入沉浸模式', description: '思源界面启动完成后自动进入沉浸模式，默认关闭。', createActionElement: () => {
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'b3-switch';
-      toggle.setAttribute('aria-label', '资源打开时进入沉浸模式');
+      toggle.setAttribute('aria-label', '启动思源时进入沉浸模式');
       toggle.checked = this.settingsData.autoEnterOnResourceOpen;
       toggle.addEventListener('change', () => {
         this.settingsData.autoEnterOnResourceOpen = toggle.checked;
-        this.configureResourceAutoEnter(); this.savePreferences();
+        this.savePreferences();
       });
       return toggle;
     } });
@@ -129,7 +129,11 @@ module.exports = class ImmersiveMode extends Plugin {
     });
     this.topButton?.classList.add('sim-immersive-entry');
     this.updateTopButton();
-    this.configureResourceAutoEnter();
+    if (this.settingsData.autoEnterOnResourceOpen) {
+      window.requestAnimationFrame(() => {
+        if (!this.disposed && !this.active && this.topButton?.isConnected) this.enter();
+      });
+    }
   }
 
   updateTopButton() {
@@ -293,7 +297,7 @@ module.exports = class ImmersiveMode extends Plugin {
   }
 
   applyTopBarSetting() {
-    const keep = this.active && this.isWindowsDesktop && this.settingsData.windowsTopBar;
+    const keep = this.active && this.isDesktopClient && this.settingsData.windowsTopBar;
     this.clearNativeTools(true);
     document.body.classList.toggle('sim-window-strip', !!keep);
     document.body.classList.toggle('sim-keep-topbar', !!keep);
@@ -469,7 +473,7 @@ module.exports = class ImmersiveMode extends Plugin {
       this.drag = null;
       if (drag.moved) {
         this.suppressClick = true;
-        this.settingsData.side = parseFloat(orb.style.left) + 21 < innerWidth / 2 ? 'left' : 'right';
+        this.settingsData.side = parseFloat(orb.style.left) + 16 < innerWidth / 2 ? 'left' : 'right';
         this.settingsData.y = clamp(parseFloat(orb.style.top) / Math.max(1, innerHeight - 42), 0, 1);
         this.placeOrb(); this.savePreferences();
       }
@@ -532,7 +536,11 @@ module.exports = class ImmersiveMode extends Plugin {
     const title = document.createElement("strong");
     title.textContent = "Immersive 沉浸模式";
     header.append(title);
-    const keepTopbar = this.isWindowsDesktop && this.settingsData.windowsTopBar;
+    if (!this.isDesktopClient) {
+      const exit = iconButton('exit', '退出沉浸', 'exit', () => this.leave());
+      exit.classList.add('sim-header-exit'); header.append(exit);
+    }
+    const keepTopbar = this.isDesktopClient && this.settingsData.windowsTopBar;
     const tabPanel = keepTopbar ? null : this.createTabPanel();
     const scroll = document.createElement("div");
     scroll.className = "sim-menu-other-scroll";
@@ -629,8 +637,7 @@ module.exports = class ImmersiveMode extends Plugin {
     this.windowActions = null;
     this.menu.append(header);
     this.menu.append(scroll);
-    if (!keepTopbar) {
-      this.menu.classList.add('sim-menu--with-control-dock');
+    if (!keepTopbar && this.isDesktopClient) {
       this.menu.append(this.createWindowActions());
     }
     this.updateWindowButtons();
@@ -643,20 +650,18 @@ module.exports = class ImmersiveMode extends Plugin {
     if (focusedKey) [...this.menu.querySelectorAll('.sim-action')].find(el => el.dataset.actionKey === focusedKey)?.focus({ preventScroll: true });
     if (focusedTab) [...this.menu.querySelectorAll('.sim-tab')].find(el => el.dataset.tabKey === focusedTab)?.focus({ preventScroll: true });
     if (focusedToggle) this.menu.querySelector('.sim-tabs-toggle')?.focus({ preventScroll: true });
-    if (focusedControl) this.windowActions?.querySelector(`[data-control-key="${focusedControl}"]`)?.focus({ preventScroll: true });
+    if (focusedControl) this.menu.querySelector(`[data-control-key="${focusedControl}"]`)?.focus({ preventScroll: true });
   }
 
   createWindowActions() {
     const actions = document.createElement('div');
     actions.className = 'sim-window-actions sim-control-dock';
     actions.setAttribute('role', 'toolbar'); actions.setAttribute('aria-label', '窗口与沉浸模式控制');
-    actions.append(iconButton('exit', '退出沉浸', 'exit', () => this.leave()));
-    if (this.isDesktopClient) {
-      actions.append(
-        iconButton('minimize', '最小化', 'minimize', () => this.invokeWindowControl('minWindow')),
-        iconButton('maximize', '最大化', 'maximize', () => this.invokeWindowControl(document.body.classList.contains('body--maximize') ? 'restoreWindow' : 'maxWindow')),
-        iconButton('close', '关闭窗口', 'close', () => this.invokeWindowControl('closeWindow')));
-    }
+    actions.append(
+      iconButton('exit', '退出沉浸', 'exit', () => this.leave()),
+      iconButton('minimize', '最小化', 'minimize', () => this.invokeWindowControl('minWindow')),
+      iconButton('maximize', '最大化', 'maximize', () => this.invokeWindowControl(document.body.classList.contains('body--maximize') ? 'restoreWindow' : 'maxWindow')),
+      iconButton('close', '关闭窗口', 'close', () => this.invokeWindowControl('closeWindow')));
     this.windowActions = actions;
     actions.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !event.buttons) this.closeSubmenu(); });
     return actions;
@@ -733,13 +738,23 @@ module.exports = class ImmersiveMode extends Plugin {
     for (const tab of visible) {
       const name = tab.querySelector('.item__text')?.textContent?.trim() || plainLabel(tab) || '未命名页面';
       const active = tab.classList.contains('item--focus');
+      const row = document.createElement('div'); row.className = 'sim-tab-row';
+      row.classList.toggle('sim-tab-row--active', active);
       const select = button('', 'sim-tab', () => { this.closeMenu(); if (tab.isConnected) tab.click(); });
       select.dataset.tabKey = `${tab.closest('[data-type="wnd"]')?.dataset.id || ''}:${tab.dataset.id}`;
       select.title = name; select.setAttribute('aria-label', `切换页签：${name}`);
       select.setAttribute('aria-current', String(active));
       const marker = document.createElement('span'); marker.className = 'sim-tab-marker'; marker.textContent = active ? '●' : '○'; marker.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span'); label.className = 'sim-tab-label'; label.textContent = name;
-      select.append(marker, label); list.append(select);
+      const close = iconButton('close-tab', `关闭页签：${name}`, 'close', event => {
+        event.stopPropagation();
+        if (!tab.isConnected) return;
+        const nativeClose = tab.querySelector('.item__close, [data-type="close"]');
+        if (nativeClose) nativeClose.click();
+        else tab.dispatchEvent(new window.MouseEvent('auxclick', { bubbles: true, button: 1 }));
+      });
+      close.classList.add('sim-tab-close');
+      select.append(marker, label); row.append(select, close); list.append(row);
     }
     panel.append(heading, list);
     const remaining = tabs.length - this.settingsData.tabPreviewCount;
@@ -873,7 +888,7 @@ module.exports = class ImmersiveMode extends Plugin {
     const { width, height } = this.menu.getBoundingClientRect();
     const x = this.settingsData.side === 'right' ? orb.left - width - 10 : orb.right + 10;
     const left = clamp(x, 8, innerWidth - width - 8);
-    const top = clamp(orb.top - height / 2 + 21, 8, innerHeight - height - 8);
+    const top = clamp(orb.top - height / 2 + 16, 8, innerHeight - height - 8);
     this.menu.style.left = `${left}px`;
     this.menu.style.top = `${top}px`;
     this.placeSubmenu();

@@ -129,24 +129,24 @@ body.sim-active #toolbar.sim-native-tools {
 /* A revealed page toolbar keeps the host's native document-flow layout and
    theme. Immersive mode only opts it out of the hidden-breadcrumb selector. */
 .sim-orb, .sim-menu { box-sizing: border-box; color: var(--b3-theme-on-background, #27312f); font-family: var(--b3-font-family, system-ui); }
-/* AssistiveTouch-inspired white disc, neutral rings and a translucent shell.
-   Activation changes contrast, without changing the size of the hit target. */
+/* Compact AssistiveTouch-inspired white disc, neutral rings and translucent shell.
+   Activation changes contrast without changing the button footprint. */
 .sim-orb {
-  position: fixed; width: 42px; height: 42px; padding: 0; border: 1px solid #ffffff38;
-  border-radius: 14px; background: rgba(45, 47, 52, .48);
-  box-shadow: 0 2px 10px #0002; opacity: .55;
+  position: fixed; width: 32px; height: 32px; padding: 0; border: 1px solid #ffffff38;
+  border-radius: 11px; background: rgba(45, 47, 52, .48);
+  box-shadow: 0 2px 8px #0002; opacity: .55;
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
   z-index: 25; cursor: grab; touch-action: none; user-select: none; -webkit-app-region: no-drag;
   display: grid; place-items: center; transition: opacity .2s, background .2s, box-shadow .2s;
 }
 .sim-orb::before {
-  content: ""; width: 22px; height: 22px; border-radius: 50%;
+  content: ""; width: 16px; height: 16px; border-radius: 50%;
   background: linear-gradient(#fff, #f1f1f3); border: 1px solid #fff;
   box-shadow: 0 0 0 3px #ffffff30, 0 0 0 6px #ffffff12, 0 1px 4px #0003;
   pointer-events: none; transition: transform .2s, box-shadow .2s;
 }
 .sim-orb:hover, .sim-orb:focus-visible { opacity: .9; }
-.sim-orb--active { opacity: 1; background: rgba(45, 47, 52, .68); box-shadow: 0 3px 14px #0003; }
+.sim-orb--active { opacity: 1; background: rgba(45, 47, 52, .68); box-shadow: 0 3px 11px #0003; }
 .sim-orb--active::before { transform: scale(1.06); box-shadow: 0 0 0 3px #ffffff55, 0 0 0 6px #ffffff20, 0 1px 4px #0003; }
 .sim-orb:active { cursor: grabbing; }
 .sim-menu {
@@ -157,15 +157,21 @@ body.sim-active #toolbar.sim-native-tools {
   z-index: 26; overflow: hidden; -webkit-app-region: no-drag; font: 11.5px/16px var(--b3-font-family, system-ui);
   animation: sim-card-in .18s ease-out;
 }
-.sim-menu-header { display: flex; align-items: center; padding: 10px 19px 4px; flex-shrink: 0; }
-.sim-menu-header strong { font-size: 12px; font-weight: 600; }
+.sim-menu-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 12px 4px 19px; flex-shrink: 0; }
+.sim-menu-header strong { font-size: 13px; line-height: 18px; font-weight: 600; }
+.sim-window-button.sim-header-exit, .sim-window-actions [data-control-key="exit"] { color: var(--b3-theme-primary, #4c7cf3); }
 .sim-menu-tabs { padding: 0 0 4px; }
 .sim-menu-tabs h3 { flex-shrink: 0; margin-top: 6px; }
 .sim-tab-list { overflow: visible; }
-.sim-menu .sim-tab { box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; padding: 5px 7px; text-align: left; }
+.sim-tab-row { display: flex; align-items: center; min-width: 0; border-radius: 5px; }
+.sim-tab-row:hover, .sim-tab-row:focus-within, .sim-tab-row--active { background: var(--sim-menu-hover); }
+.sim-menu .sim-tab { box-sizing: border-box; display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; min-height: 26px; padding: 5px 7px; text-align: left; }
 .sim-tab-marker { flex-shrink: 0; font-size: 9px; opacity: .6; }
 .sim-tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sim-menu .sim-tab[aria-current="true"] { background: var(--sim-menu-hover); font-weight: 500; }
+.sim-menu .sim-tab[aria-current="true"] { background: transparent; font-weight: 500; }
+.sim-window-button.sim-tab-close { opacity: 0; margin-right: 2px; color: #d84c4c; transition: opacity .12s ease-out, background-color .12s ease-out; }
+.sim-tab-row:hover .sim-tab-close, .sim-tab-row:focus-within .sim-tab-close { opacity: .68; }
+.sim-tab-row .sim-tab-close:hover, .sim-tab-row .sim-tab-close:focus-visible { opacity: 1; background: color-mix(in srgb, #d84c4c 12%, transparent); }
 .sim-menu .sim-tabs-toggle { flex-shrink: 0; padding: 5px 7px; text-align: left; font-size: 11.5px; color: var(--b3-theme-on-surface, #777); }
 .sim-menu-other-scroll { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 4px; min-height: 0; }
 .sim-menu h3 { margin: 9px 7px 4px; font-size: 11.5px; font-weight: 500; color: var(--b3-theme-on-surface, #777); }
@@ -186,7 +192,7 @@ body.sim-active #toolbar.sim-native-tools {
 .sim-plugin-settings::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; border-top: 1px solid var(--b3-border-color, #eee); pointer-events: none; }
 .sim-window-actions {
   box-sizing: border-box; display: flex; align-items: center; justify-content: space-around; align-self: center; flex: 0 0 auto;
-  gap: 4px; width: calc(100% - 24px); min-height: 34px; margin: 4px 12px 8px; padding: 5px 10px;
+  gap: 4px; width: calc(100% - 24px); min-height: 34px; margin: 4px auto 8px; padding: 5px 10px;
   border: 1px solid var(--b3-border-color, #ddd); border-radius: 10px;
   background: color-mix(in srgb, var(--b3-theme-background, #fff) 92%, transparent);
   color: var(--b3-theme-on-background, #27312f); box-shadow: 0 3px 12px #0000001a;
@@ -198,7 +204,7 @@ body.sim-active #toolbar.sim-native-tools {
 .sim-window-button:hover:not(:disabled) { background: var(--b3-list-hover, #eeeeee); }
 .sim-window-button:disabled { opacity: .4; cursor: default; }
 .sim-window-button:focus-visible { outline: 2px solid var(--b3-theme-on-surface, #777); outline-offset: -2px; }
-.sim-menu button:hover:not(.sim-action):not(:disabled) { background: var(--sim-menu-hover); }
+.sim-menu button:hover:not(.sim-action):not(.sim-tab):not(:disabled) { background: var(--sim-menu-hover); }
 .sim-menu button:disabled { opacity: .4; cursor: default; }
 .sim-menu button:focus-visible, .sim-orb:focus-visible { outline: 2px solid var(--b3-theme-on-surface, #777); outline-offset: -2px; }
 /* The real SiYuan menu is the second card. Its children, parent, event handlers
@@ -228,6 +234,7 @@ body.sim-active .sim-native-submenu .b3-menu__item svg { width: 14px; height: 14
 body.sim-active .sim-native-submenu .b3-menu__item:hover:not(:disabled) { background: var(--b3-list-hover, #eeeeee); }
 body.sim-active .sim-native-submenu .b3-menu__accelerator { display: none !important; }
 .sim-sync-tip { position: fixed; z-index: 27; box-sizing: border-box; max-width: min(240px, calc(100vw - 16px)); max-height: calc(100vh - 16px); padding: 7px 9px; border: 1px solid var(--b3-border-color, #ddd); border-radius: 7px; background: var(--b3-theme-background, #fff); color: var(--b3-theme-on-background, #333); box-shadow: 0 4px 16px #0002; font: 11px/1.5 var(--b3-font-family, system-ui); white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; pointer-events: none; }
+.sim-immersive-entry { color: var(--b3-theme-primary, #4c7cf3) !important; }
 .sim-immersive-entry svg { fill: currentColor; }
 .sim-orb[hidden], .sim-menu[hidden] { display: none !important; }
 
