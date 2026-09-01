@@ -1,7 +1,7 @@
 const { Plugin, Setting, getFrontend, getBackend, showMessage } = require('siyuan');
 const css = require('./styles.css');
 const uiCss = require('./ui.css');
-const { version: pluginVersion } = require('../plugin.json');
+const { name: pluginName, version: pluginVersion } = require('../plugin.json');
 const { ACTION_GROUPS, normalizeSettings, clamp, orbPosition, plainLabel, stripShortcuts, discoverActions, tabsOverflow } = require('./core');
 const { ENTER_ICON, EXIT_ICON } = require('./icons');
 const STORE = 'preferences.json';
@@ -67,7 +67,7 @@ module.exports = class ImmersiveMode extends Plugin {
       const content = this.setting.dialog?.element?.querySelector('.b3-dialog__content');
       if (content) {
         const version = document.createElement('div'); version.className = 'sim-settings-version';
-        version.textContent = `版本 ${pluginVersion}`; content.append(version);
+        version.textContent = `${pluginName} · v${pluginVersion}`; content.append(version);
       }
     };
     this.setting.addItem({ title: 'Windows：保留顶部工具栏', description: '工具与页签保留在顶部，仅 Windows 客户端生效。', createActionElement: () => {
@@ -117,7 +117,16 @@ module.exports = class ImmersiveMode extends Plugin {
 
   onLayoutReady() {
     if (this.disposed || !['desktop', 'browser-desktop'].includes(this.frontend) || this.topButton?.isConnected) return;
-    this.topButton = this.addTopBar({ icon: ENTER_ICON, title: '进入沉浸模式 · Alt+Shift+I', position: 'right', callback: () => this.toggle() });
+    this.topButton = this.addTopBar({
+      icon: ENTER_ICON, title: '进入沉浸模式 · Alt+Shift+I', position: 'right',
+      callback: event => {
+        // SiYuan 3.8.2's delegated toolbar handler interprets a bubbling
+        // PointerEvent.detail as an element id and dereferences a null result.
+        event?.stopPropagation?.();
+        this.deferTopButtonIcon = true;
+        try { this.toggle(); } finally { this.deferTopButtonIcon = false; }
+      },
+    });
     this.topButton?.classList.add('sim-immersive-entry');
     this.updateTopButton();
     this.configureResourceAutoEnter();
@@ -128,7 +137,17 @@ module.exports = class ImmersiveMode extends Plugin {
     this.topButton.removeAttribute('title');
     this.topButton.classList.add('ariaLabel');
     this.topButton.setAttribute('aria-label', `${this.active ? '退出' : '进入'}沉浸模式 · Alt+Shift+I`);
-    this.topButton.innerHTML = this.active ? EXIT_ICON : ENTER_ICON;
+    const updateIcon = () => {
+      this.topButtonIconFrame = null;
+      if (this.topButton?.isConnected) this.topButton.innerHTML = this.active ? EXIT_ICON : ENTER_ICON;
+    };
+    if (this.deferTopButtonIcon) {
+      if (this.topButtonIconFrame != null) window.cancelAnimationFrame(this.topButtonIconFrame);
+      this.topButtonIconFrame = window.requestAnimationFrame(updateIcon);
+    } else {
+      if (this.topButtonIconFrame != null) window.cancelAnimationFrame(this.topButtonIconFrame);
+      updateIcon();
+    }
   }
 
   configureResourceAutoEnter() {
@@ -228,7 +247,7 @@ module.exports = class ImmersiveMode extends Plugin {
       this.placeOrb();
       this.listen(window, 'resize', () => { this.placeOrb(); this.placeMenu(); this.queueMergedTabs(); });
       this.listen(document, 'pointerdown', event => {
-        if (!this.menu?.contains(event.target) && !this.submenu?.contains(event.target) && !this.orb.contains(event.target)) this.closeMenu();
+        if (!this.menu?.contains(event.target) && !this.windowActions?.contains(event.target) && !this.submenu?.contains(event.target) && !this.orb.contains(event.target)) this.closeMenu();
         if (![...this.nativeReveals].some(el => el.contains(event.target))) this.clearNativeTools(true);
       }, true);
       this.listen(document, 'keydown', event => {
@@ -511,7 +530,7 @@ module.exports = class ImmersiveMode extends Plugin {
     const header = document.createElement("div");
     header.className = "sim-menu-header";
     const title = document.createElement("strong");
-    title.textContent = "沉浸模式";
+    title.textContent = "Immersive 沉浸模式";
     header.append(title);
     const keepTopbar = this.isWindowsDesktop && this.settingsData.windowsTopBar;
     const tabPanel = keepTopbar ? null : this.createTabPanel();
@@ -600,16 +619,20 @@ module.exports = class ImmersiveMode extends Plugin {
     }
     const settingsRow = document.createElement('div');
     settingsRow.className = 'sim-row sim-plugin-settings';
-    const settings = button('', 'sim-action', () => { this.closeMenu(); this.setting.open('沉浸模式设置'); });
+    const settings = button('', 'sim-action', () => { this.closeMenu(); this.setting.open('Immersive 沉浸模式设置'); });
     settings.dataset.actionKey = 'builtin:plugin-settings';
     setButtonIcon(settings, '插件设置', 'settings');
     const settingsLabel = document.createElement('span'); settingsLabel.textContent = '插件设置';
     settings.append(settingsLabel); settingsRow.append(settings); scroll.append(settingsRow);
     settingsRow.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !event.buttons) this.closeSubmenu(); });
+    this.windowActions?.remove();
     this.windowActions = null;
     this.menu.append(header);
     this.menu.append(scroll);
-    if (!keepTopbar) this.menu.append(this.createWindowActions());
+    if (!keepTopbar) {
+      this.menu.classList.add('sim-menu--with-control-dock');
+      this.menu.append(this.createWindowActions());
+    }
     this.updateWindowButtons();
     scroll.scrollTop = oldScroll;
     this.placeMenu();
@@ -625,7 +648,7 @@ module.exports = class ImmersiveMode extends Plugin {
 
   createWindowActions() {
     const actions = document.createElement('div');
-    actions.className = 'sim-window-actions sim-footer';
+    actions.className = 'sim-window-actions sim-control-dock';
     actions.setAttribute('role', 'toolbar'); actions.setAttribute('aria-label', '窗口与沉浸模式控制');
     actions.append(iconButton('exit', '退出沉浸', 'exit', () => this.leave()));
     if (this.isDesktopClient) {
@@ -849,8 +872,10 @@ module.exports = class ImmersiveMode extends Plugin {
     const orb = this.orb.getBoundingClientRect();
     const { width, height } = this.menu.getBoundingClientRect();
     const x = this.settingsData.side === 'right' ? orb.left - width - 10 : orb.right + 10;
-    this.menu.style.left = `${clamp(x, 8, innerWidth - width - 8)}px`;
-    this.menu.style.top = `${clamp(orb.top - height / 2 + 21, 8, innerHeight - height - 8)}px`;
+    const left = clamp(x, 8, innerWidth - width - 8);
+    const top = clamp(orb.top - height / 2 + 21, 8, innerHeight - height - 8);
+    this.menu.style.left = `${left}px`;
+    this.menu.style.top = `${top}px`;
     this.placeSubmenu();
     this.updateSyncTip();
   }
@@ -889,6 +914,7 @@ module.exports = class ImmersiveMode extends Plugin {
   closeMenu(focusOrb = false) {
     this.hideSyncTip();
     this.menu?.remove(); this.menu = null;
+    this.windowActions?.remove();
     this.windowActions = null;
     this.closeSubmenu();
     this.menuOpenedByHover = false;
@@ -999,6 +1025,8 @@ module.exports = class ImmersiveMode extends Plugin {
 
   onunload() {
     this.disposed = true;
+    if (this.topButtonIconFrame != null) window.cancelAnimationFrame(this.topButtonIconFrame);
+    this.topButtonIconFrame = null;
     this.resourceObserver?.disconnect(); this.resourceObserver = null;
     if (this.resourceEnterFrame != null) window.cancelAnimationFrame(this.resourceEnterFrame);
     this.resourceEnterFrame = null;

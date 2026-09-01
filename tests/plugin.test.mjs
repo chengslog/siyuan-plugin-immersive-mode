@@ -138,11 +138,26 @@ test('top entry keeps one native tooltip synchronized with the immersive state',
   f.dispose(); assert.equal(f.win.document.querySelector('#sim-ui-style'), null);
 });
 
+test('top entry contains its pointer event and defers icon replacement until host delegation finishes', async () => {
+  const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const doc = f.win.document;
+  const originalIcon = p.topButton.firstElementChild; const originalMarkup = p.topButton.innerHTML; let bubbled = 0;
+  doc.getElementById('toolbar').addEventListener('click', () => bubbled++);
+  p.topButton.dispatchEvent(new f.win.PointerEvent('click', { bubbles: true, detail: 1 }));
+  assert.equal(p.active, true);
+  assert.equal(bubbled, 0, 'raw pointer event must not reach SiYuan delegated toolbar handling');
+  assert.equal(originalIcon.isConnected, true, 'click target remains connected during event dispatch');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(originalIcon.isConnected, false); assert.notEqual(p.topButton.innerHTML, originalMarkup);
+  assert.equal(p.topButton.getAttribute('aria-label'), '退出沉浸模式 · Alt+Shift+I');
+  f.dispose();
+});
+
 test('compact settings apply in ordinary and immersive modes and destroy on unload', async () => {
   const f = await fixture(); const p = f.plugin;
   assert.equal(p.setting.options.height, 'fit-content'); assert.equal(p.setting.options.confirmCallback, undefined);
   p.setting.open('沉浸模式设置'); assert.ok(p.setting.dialog.element.classList.contains('sim-settings-dialog'));
-  assert.equal(p.setting.dialog.element.querySelector('.sim-settings-version').textContent, `版本 ${require('../plugin.json').version}`);
+  const manifest = require('../plugin.json');
+  assert.equal(p.setting.dialog.element.querySelector('.sim-settings-version').textContent, `${manifest.name} · v${manifest.version}`);
   assert.ok(f.win.document.querySelector('#sim-ui-style')); p.setting.dialog.destroy();
   p.enter(); p.openMenu(); p.menu.querySelector('[data-action-key="builtin:plugin-settings"]').click();
   const dialog = p.setting.dialog.element; assert.ok(dialog.classList.contains('sim-settings-dialog'));
@@ -381,13 +396,15 @@ function nativeMenuFixture(f) {
   return { menu, choice, open, owner, counts: () => ({ opens, executions, closes }) };
 }
 
-test('plugin settings is a menu item and browser footer has only exit without hiding page tools', async () => {
+test('plugin settings is a menu item and browser control dock has only exit without hiding page tools', async () => {
   for (const options of [{}, { frontend: 'browser-desktop', backend: 'docker' }]) {
     const f = await fixture(options); const p = f.plugin;
     p.enter(); p.openMenu();
     assert.equal(p.menu.querySelector('[data-action-group="page"], [data-action-key="builtin:page-tools"], [data-action-key="builtin:settings"]'), null);
     assert.ok(f.win.document.querySelector('.protyle-breadcrumb.sim-page-tools'));
-    assert.equal(p.menu.querySelector('.sim-footer'), p.windowActions);
+    assert.equal(p.menu.querySelector('.sim-window-actions'), p.windowActions);
+    assert.equal(p.windowActions.parentElement, p.menu);
+    assert.ok(p.windowActions.classList.contains('sim-control-dock'));
     assert.deepEqual([...p.windowActions.querySelectorAll('button')].map(el => el.getAttribute('aria-label')), ['退出沉浸']);
     const settings = p.menu.querySelector('[data-action-key="builtin:plugin-settings"]');
     assert.equal(settings.textContent, '插件设置');
@@ -439,7 +456,7 @@ test('sync keeps a fixed label and hover displays fresh host information without
   assert.equal(doc.querySelector('.sim-sync-tip'), null); f.dispose();
 });
 
-test('desktop footer controls follow live window state and proxies native clicks without moving controls', async () => {
+test('desktop control dock follows live window state and proxies native clicks without moving controls', async () => {
   for (const backend of ['windows', 'linux', 'darwin']) {
     const f = await fixture({ frontend: 'desktop', backend }); const p = f.plugin; const doc = f.win.document;
     const controls = doc.getElementById('windowControls'); const nodes = [...controls.children];
@@ -463,7 +480,7 @@ test('desktop footer controls follow live window state and proxies native clicks
     p.leave(); assert.equal(p.windowStateObserver, null);
     assert.deepEqual([...controls.children], nodes);
     assert.equal(controls.parentElement.id, 'toolbar');
-    assert.equal(doc.querySelector('.sim-footer'), null);
+    assert.equal(doc.querySelector('.sim-control-dock'), null);
     f.dispose();
   }
 });
@@ -485,16 +502,30 @@ test('hover opens real submenu once and keeps it usable across the gap and follo
   f.dispose();
 });
 
-test('window controls belong to the card footer and never create a corner overlay', async () => {
+test('window controls use a proportional floating dock inside the card bottom', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin; const win = f.win;
   p.enter();
   assert.equal(win.document.querySelector('.sim-window-actions'), null);
   win.dispatchEvent(new win.PointerEvent('pointermove', { pointerType: 'mouse', clientX: 970, clientY: 14 }));
   assert.equal(win.document.querySelector('.sim-window-actions'), null);
   p.openMenu(); const controls = p.windowActions;
-  assert.equal(controls.parentElement, p.menu); assert.equal(p.menu.lastElementChild, controls);
+  assert.equal(controls.parentElement, p.menu);
+  assert.equal(p.menu.querySelector('.sim-window-actions'), controls);
+  assert.equal(p.menu.lastElementChild, controls);
+  assert.ok(p.menu.classList.contains('sim-menu--with-control-dock'));
   assert.equal(controls.querySelectorAll('button').length, 4);
   assert.notEqual(win.getComputedStyle(controls).position, 'fixed');
+  assert.equal(win.getComputedStyle(controls).width, 'calc(100% - 24px)');
+  assert.equal(win.getComputedStyle(controls).borderRadius, '10px');
+  for (const control of controls.querySelectorAll('button')) {
+    assert.equal(win.getComputedStyle(control).width, '22px');
+    assert.equal(win.getComputedStyle(control).height, '22px');
+    assert.equal(win.getComputedStyle(control.querySelector('svg')).width, '14px');
+  }
+  assert.equal(controls.previousElementSibling.className, 'sim-menu-other-scroll');
+  controls.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+  assert.equal(p.menu.isConnected, true, 'the dock is part of the card interaction surface');
+  p.renderMenu(); assert.equal(win.document.querySelectorAll('.sim-control-dock').length, 1);
   p.closeMenu(); assert.equal(p.windowActions, null); assert.equal(controls.isConnected, false);
   p.openMenu(); p.leave(); assert.equal(win.document.querySelector('.sim-window-actions'), null);
   f.dispose();
@@ -710,7 +741,7 @@ test('registered plugin buttons remain reachable after another collector moves t
   f.dispose();
 });
 
-test('entry and exit use supplied vectors while footer controls use SiYuan icon symbols', async () => {
+test('entry and exit use supplied vectors while control dock uses SiYuan icon symbols', async () => {
   const f = await fixture({ frontend: 'desktop' }); const p = f.plugin;
   const enter = p.topButton.querySelectorAll('path')[1].getAttribute('d');
   assert.ok(enter.startsWith('M775.314286 204.8'));
@@ -889,6 +920,7 @@ test('visible full toolbar removes top actions; full immersion keeps those actio
   assert.equal(p.menu.querySelector('[data-action-key="top:barSearch"]'), null);
   assert.equal(p.menu.querySelector('[data-action-group="top"]'), null);
   assert.equal(p.menu.querySelector('.sim-menu-tabs, .sim-window-actions'), null);
+  assert.equal(f.win.document.querySelector('.sim-window-actions'), null);
   assert.equal(p.windowActions, null);
   assert.ok(p.menu.querySelector('[data-action-group="left"] [data-action-key="dock:file"]'));
   assert.deepEqual(Array.from(p.settingsData.favorites), ['top:barSearch', 'dock:file', 'builtin:toolbar']);
@@ -1007,7 +1039,7 @@ test('removed or replaced switcher is restored and observer tracks tab widths fo
   f.dispose();
 });
 
-test('resizing an open card keeps its page actions and footer exit available', async () => {
+test('resizing an open card keeps its page actions and control dock exit available', async () => {
   const f = await fixture(); f.plugin.enter(); f.plugin.openMenu();
   f.sandbox.innerWidth = 420; f.sandbox.innerHeight = 280;
   f.win.dispatchEvent(new f.win.Event('resize'));
@@ -1016,11 +1048,13 @@ test('resizing an open card keeps its page actions and footer exit available', a
   f.dispose();
 });
 
-test('card scrolls tabs with grouped actions while keeping the footer outside the scroll area', async () => {
+test('card scrolls tabs with grouped actions while keeping the control dock fixed inside its bottom', async () => {
   const f = await fixture({ width: 420, height: 280 }); const p = f.plugin; p.enter(); p.openMenu();
   assert.equal(p.menu.querySelectorAll('.sim-menu-tabs .sim-tab').length, 2);
   assert.ok(p.menu.querySelector('.sim-menu-other-scroll .sim-tab'));
   assert.equal(p.menu.querySelectorAll('.sim-menu-other-scroll .sim-window-actions').length, 0);
+  assert.equal(p.windowActions.parentElement, p.menu);
+  assert.equal(p.menu.lastElementChild, p.windowActions);
   assert.equal(p.menu.querySelectorAll('.sim-action[data-action-key="dock:things"]').length, 1);
   assert.ok(p.orb.classList.contains('sim-orb--active'));
   assert.ok(p.menu.querySelector('.sim-menu-other-scroll .sim-action[data-action-key="dock:things"]'));
@@ -1063,6 +1097,7 @@ test('full immersion hides the whole toolbar and leaves native controls untouche
   p.settingsData.windowsTopBar = false; p.applyTopBarSetting();
   assert.ok(p.menu.querySelector('.sim-menu-tabs'));
   assert.equal(p.menu.querySelectorAll('.sim-window-button').length, 4);
+  assert.equal(p.windowActions.querySelectorAll('.sim-window-button').length, 4);
   assert.equal(style('#toolbar').display, 'none');
   p.leave(); assert.equal(doc.body.classList.contains('sim-window-strip'), false);
   assert.notEqual(style('#barSearch').display, 'none'); assert.equal(style('#toolbar').height, '42px');
@@ -1082,9 +1117,23 @@ test('panels use four equal borders without a second center-wrapper border and r
   for (const node of [panel, doc.querySelector('#sidebar')]) {
     const style = f.win.getComputedStyle(node);
     assert.deepEqual(['Top', 'Right', 'Bottom', 'Left'].map(side => style['border' + side + 'Width']), ['1px', '1px', '1px', '1px']);
+    assert.equal(style.borderRadius, '12px');
   }
   assert.equal(f.win.getComputedStyle(doc.querySelector('.layout__center')).borderTopWidth, '0px');
   f.plugin.leave(); assert.equal(f.win.getComputedStyle(panel).borderTopWidth, '2px'); f.dispose();
+});
+
+test('collapsed zero-size side and bottom Dock shells leave no gray outline', async () => {
+  const f = await fixture(); const doc = f.win.document;
+  const right = doc.createElement('div'); right.className = 'layout__dockr'; right.style.cssText = 'width: 0px; min-height: 8px;';
+  const bottom = doc.createElement('div'); bottom.className = 'layout__dockb'; bottom.style.height = '0px';
+  doc.querySelector('#main-row').append(right); doc.body.append(bottom); f.plugin.enter();
+  for (const node of [right, bottom]) {
+    const style = f.win.getComputedStyle(node);
+    assert.deepEqual(['Top', 'Right', 'Bottom', 'Left'].map(side => style['border' + side + 'Width']), ['0px', '0px', '0px', '0px']);
+    assert.equal(style.boxShadow, 'none');
+  }
+  f.dispose();
 });
 
 test('tab count setting clamps invalid values, applies live and survives reload', async () => {
@@ -1154,5 +1203,7 @@ test('release archive is flat and contains executable CommonJS plugin', () => {
   const zip = unzipSync(readFileSync(new URL('../artifacts/siyuan-plugin-immersive-mode-0.1.0.zip', import.meta.url)));
   assert.deepEqual(Object.keys(zip).sort(), ['README.md', 'i18n/en-US.json', 'i18n/en_US.json', 'i18n/zh-CN.json', 'i18n/zh_CN.json', 'icon.png', 'index.js', 'plugin.json']);
   const manifest = JSON.parse(new TextDecoder().decode(zip['plugin.json']));
-  assert.equal(manifest.name, 'siyuan-plugin-immersive-mode'); assert.ok(zip['index.js'].length > 1000);
+  assert.equal(manifest.name, 'siyuan-plugin-immersive-mode');
+  assert.deepEqual(Object.values(manifest.displayName), ['Immersive 沉浸模式', 'Immersive 沉浸模式', 'Immersive 沉浸模式']);
+  assert.ok(zip['index.js'].length > 1000);
 });

@@ -6,7 +6,7 @@
   "minAppVersion": "3.1.24",
   "backends": ["windows", "linux", "darwin", "docker"],
   "frontends": ["desktop", "browser-desktop"],
-  "displayName": {"default": "Immersive Mode", "zh_CN": "沉浸模式", "zh-CN": "沉浸模式"},
+  "displayName": {"default": "Immersive 沉浸模式", "zh_CN": "Immersive 沉浸模式", "zh-CN": "Immersive 沉浸模式"},
   "description": {"default": "A minimal workspace with a floating tab and command card.", "zh_CN": "独立沉浸模式：悬浮球、折叠页签与原生侧栏。", "zh-CN": "独立沉浸模式：悬浮球、折叠页签与原生侧栏。"},
   "readme": {"default": "README.md"},
   "keywords": ["immersive", "沉浸", "悬浮球"]
